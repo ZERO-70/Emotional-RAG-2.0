@@ -239,7 +239,14 @@ PORT=8001                         # Server port (SillyTavern uses 8000)
 ```env
 EMBEDDING_MODEL=all-MiniLM-L6-v2  # Sentence-transformers model
 RAG_TOP_K=3                       # Number of retrieved chunks
-USE_CHROMADB=false                # Phase 2: Advanced vector DB
+
+# Phase 2 Features (optional)
+ENABLE_CHROMADB=true              # Advanced vector database
+ENABLE_RERANKING=true             # Cross-encoder reranking
+ENABLE_TRANSFORMER_EMOTIONS=true  # Better emotion detection
+ENABLE_REDIS=false                # Distributed memory (needs Redis server)
+ENABLE_POSTGRESQL=false           # PostgreSQL (needs server)
+ENABLE_METRICS=true               # Prometheus metrics
 ```
 
 ### Token Budget
@@ -373,14 +380,14 @@ Messages are scored (0-1) based on:
 - [x] Rule-based emotion detection
 - [x] Basic summarization
 
-### Phase 2 (Production) 🚧
-- [ ] Upgrade to ChromaDB for vectors
-- [ ] Implement reranking with cross-encoder
-- [ ] Transformer-based emotion detection
+### Phase 2 (Production) ✅
+- [x] Upgrade to ChromaDB for vectors
+- [x] Implement reranking with cross-encoder
+- [x] Transformer-based emotion detection
+- [x] Redis for distributed memory
+- [x] Monitoring & metrics (Prometheus)
+- [x] Docker deployment
 - [ ] Cost tracking dashboard
-- [ ] Redis for distributed memory
-- [ ] Monitoring & metrics (Prometheus)
-- [ ] Docker deployment
 - [ ] Comprehensive test suite
 
 ---
