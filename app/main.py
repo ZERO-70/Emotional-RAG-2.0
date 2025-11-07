@@ -15,6 +15,22 @@ from app.services.rag_engine import RAGEngine
 from app.services.emotion_tracker import EmotionTracker
 from app.routes import chat, health
 
+# Phase 2 imports (conditional)
+if settings.enable_chromadb:
+    from app.services.chromadb_store import ChromaDBVectorStore
+    
+if settings.enable_reranking:
+    from app.services.reranker import Reranker
+    
+if settings.enable_transformer_emotions:
+    from app.services.transformer_emotions import TransformerEmotionDetector
+    
+if settings.enable_redis:
+    from app.services.redis_memory import RedisMemoryStore
+    
+if settings.enable_metrics:
+    from app.services.metrics import MetricsCollector
+
 # Configure logging
 def setup_logging():
     """Configure structured JSON logging."""
@@ -63,6 +79,13 @@ emotion_tracker: EmotionTracker = None
 token_manager: TokenManager = None
 memory_manager: MemoryManager = None
 
+# Phase 2 service instances (conditional)
+chromadb_store = None
+reranker = None
+transformer_emotion_detector = None
+redis_memory = None
+metrics_collector = None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -75,18 +98,44 @@ async def lifespan(app: FastAPI):
     - Clean up connections
     """
     global gemini_client, rag_engine, emotion_tracker, token_manager, memory_manager
+    global chromadb_store, reranker, transformer_emotion_detector, redis_memory, metrics_collector
     
     logger.info("Starting Emotional RAG Backend...")
+    logger.info(f"Phase 2 features: ChromaDB={settings.enable_chromadb}, Reranking={settings.enable_reranking}, "
+                f"Transformer Emotions={settings.enable_transformer_emotions}, Redis={settings.enable_redis}, "
+                f"PostgreSQL={settings.enable_postgresql}, Metrics={settings.enable_metrics}")
     
     # Startup
     try:
         # Initialize services
-        logger.info("Initializing services...")
+        logger.info("Initializing core services...")
         
         gemini_client = GeminiClient()
         rag_engine = RAGEngine()
         emotion_tracker = EmotionTracker()
         token_manager = TokenManager()
+        
+        # Phase 2: Initialize optional services
+        if settings.enable_chromadb:
+            logger.info("Initializing ChromaDB vector store...")
+            chromadb_store = ChromaDBVectorStore()
+        
+        if settings.enable_reranking:
+            logger.info("Loading cross-encoder reranker...")
+            reranker = Reranker()
+        
+        if settings.enable_transformer_emotions:
+            logger.info("Loading transformer emotion detector...")
+            transformer_emotion_detector = TransformerEmotionDetector()
+        
+        if settings.enable_redis:
+            logger.info("Connecting to Redis...")
+            redis_memory = RedisMemoryStore()
+            await redis_memory.connect()
+        
+        if settings.enable_metrics:
+            logger.info("Initializing Prometheus metrics...")
+            metrics_collector = MetricsCollector()
         
         memory_manager = MemoryManager(
             rag_engine=rag_engine,
@@ -114,6 +163,14 @@ async def lifespan(app: FastAPI):
     try:
         if memory_manager:
             await memory_manager.close_all()
+        
+        # Phase 2: Cleanup
+        if redis_memory:
+            await redis_memory.close()
+        
+        if chromadb_store:
+            await chromadb_store.close()
+        
         logger.info("Shutdown complete")
     except Exception as e:
         logger.error(f"Shutdown error: {e}", exc_info=True)
@@ -122,8 +179,8 @@ async def lifespan(app: FastAPI):
 # Create FastAPI app
 app = FastAPI(
     title="Emotional RAG Backend",
-    description="Production-ready backend for SillyTavern with proactive memory management",
-    version="1.0.0",
+    description="Production-ready backend for SillyTavern with proactive memory management - Phase 2 with advanced features",
+    version="2.0.0",
     lifespan=lifespan
 )
 
@@ -146,12 +203,22 @@ async def root():
     """Root endpoint with API information."""
     return {
         "name": "Emotional RAG Backend",
-        "version": "1.0.0",
+        "version": "2.0.0",
+        "phase": "2",
         "status": "running",
+        "features": {
+            "chromadb": settings.enable_chromadb,
+            "reranking": settings.enable_reranking,
+            "transformer_emotions": settings.enable_transformer_emotions,
+            "redis": settings.enable_redis,
+            "postgresql": settings.enable_postgresql,
+            "metrics": settings.enable_metrics
+        },
         "endpoints": {
             "chat": "/v1/chat/completions",
             "models": "/v1/models",
             "health": "/health",
+            "metrics": "/metrics",
             "docs": "/docs"
         }
     }

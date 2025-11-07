@@ -57,9 +57,14 @@ async def chat_completions(request: ChatCompletionRequest):
                 "chat_id": chat_id,
                 "message_count": len(request.messages),
                 "stream": request.stream,
-                "temperature": request.temperature
+                "temperature": request.temperature,
+                "user_field": request.user  # Log the actual user field
             }
         )
+        
+        # DEBUG: Log all message roles to understand conversation structure
+        message_roles = [f"{msg.role}:{len(msg.content)}" for msg in request.messages]
+        logger.debug(f"Message structure: {message_roles}")
         
         # Debug: Log the actual messages for troubleshooting
         if len(request.messages) == 0:
@@ -131,18 +136,42 @@ async def chat_completions(request: ChatCompletionRequest):
             max_tokens=settings.rag_token_budget
         )
         
-        # Step 4: Get conversation history
-        recent_messages = await memory_manager.get_recent_messages(
-            chat_id=chat_id,
-            limit=settings.max_working_memory_size
+        # DEBUG: Log RAG retrieval results
+        logger.debug(
+            f"RAG context retrieved: {len(rag_context) if rag_context else 0} characters",
+            extra={
+                "chat_id": chat_id,
+                "rag_context_length": len(rag_context) if rag_context else 0,
+                "rag_context_preview": rag_context[:200] if rag_context else None
+            }
         )
         
-        # Convert to API format
-        history_messages = [
-            {"role": msg["role"], "content": msg["content"]}
-            for msg in recent_messages
-            if msg["role"] in ["user", "assistant"]
-        ]
+        # Step 4: Get conversation history
+        # IMPORTANT: Use SillyTavern's provided context (request.messages)
+        # instead of database history to respect their conversation management
+        # We'll supplement with RAG for long-term memory retrieval
+        
+        # Extract history from request (excluding system messages and current user message)
+        history_messages = []
+        for msg in request.messages:
+            # Skip system messages (we'll add our own) and the current user message
+            if msg.role in ["user", "assistant"]:
+                # Don't include the very last user message (it's the current one)
+                if not (msg.role == "user" and msg.content == user_message):
+                    history_messages.append({
+                        "role": msg.role,
+                        "content": msg.content
+                    })
+        
+        # DEBUG: Log what history we're using
+        logger.debug(
+            f"Using conversation history from request",
+            extra={
+                "chat_id": chat_id,
+                "history_message_count": len(history_messages),
+                "using_st_context": True  # We're using SillyTavern's context
+            }
+        )
         
         # Step 5: Build context with token budget
         budget = token_manager.allocate_token_budget()
@@ -216,7 +245,25 @@ async def chat_completions(request: ChatCompletionRequest):
                 "system_tokens": context_result.system_tokens,
                 "rag_tokens": context_result.rag_tokens,
                 "history_tokens": context_result.history_tokens,
-                "truncated": was_truncated
+                "truncated": was_truncated,
+                "history_count": len(fitted_history),
+                "has_rag_context": bool(rag_context)
+            }
+        )
+        
+        # DEBUG: Log the full context structure being sent
+        logger.debug(
+            "Context structure:",
+            extra={
+                "chat_id": chat_id,
+                "context_messages": [
+                    {
+                        "role": msg["role"],
+                        "content_length": len(msg["content"]),
+                        "preview": msg["content"][:100]
+                    }
+                    for msg in context_messages
+                ]
             }
         )
         

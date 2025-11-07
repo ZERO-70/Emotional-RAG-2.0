@@ -25,7 +25,38 @@ class Settings(BaseSettings):
     # RAG Configuration
     embedding_model: str = "all-MiniLM-L6-v2"
     rag_top_k: int = 3
-    use_chromadb: bool = False
+    
+    # Phase 2: Feature Flags
+    enable_chromadb: bool = False
+    enable_reranking: bool = False
+    enable_transformer_emotions: bool = False
+    enable_redis: bool = False
+    enable_postgresql: bool = False
+    enable_metrics: bool = False
+    
+    # Phase 2: ChromaDB Configuration
+    chromadb_path: str = "./data/chromadb"
+    chromadb_host: Optional[str] = None
+    chromadb_port: Optional[int] = None
+    
+    # Phase 2: Reranking Configuration
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L6-v2"
+    reranking_candidates: int = 50
+    reranking_top_k: int = 10
+    
+    # Phase 2: Advanced Emotion Detection
+    emotion_model: str = "j-hartmann/emotion-english-distilroberta-base"
+    emotion_confidence_threshold: float = 0.5
+    
+    # Phase 2: Redis Configuration
+    redis_url: str = "redis://localhost:6379/0"
+    redis_ttl: int = 1800  # 30 minutes
+    redis_max_connections: int = 10
+    
+    # Phase 2: PostgreSQL Configuration
+    postgres_url: Optional[str] = None
+    postgres_pool_size: int = 10
+    postgres_max_overflow: int = 20
     
     # Token Budget (percentage allocation)
     system_token_percent: int = 20
@@ -73,6 +104,10 @@ class Settings(BaseSettings):
         Path(self.db_path).mkdir(parents=True, exist_ok=True)
         Path("./data/embeddings").mkdir(parents=True, exist_ok=True)
         Path("./logs").mkdir(parents=True, exist_ok=True)
+        
+        # Phase 2 directories
+        if self.enable_chromadb:
+            Path(self.chromadb_path).mkdir(parents=True, exist_ok=True)
     
     model_config = SettingsConfigDict(
         env_file=".env",
