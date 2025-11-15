@@ -11,6 +11,8 @@ from app.core.config import settings
 from app.core.memory import MemoryManager
 from app.core.token_manager import TokenManager
 from app.services.gemini_client import GeminiClient
+from app.services.mancer_client import MancerClient
+from app.services.llm_provider import UnifiedLLMClient
 from app.services.rag_engine import RAGEngine
 from app.services.emotion_tracker import EmotionTracker
 from app.routes import chat, health
@@ -73,7 +75,8 @@ def setup_logging():
 logger = setup_logging()
 
 # Global service instances
-gemini_client: GeminiClient = None
+llm_client: UnifiedLLMClient = None  # Unified client (replaces gemini_client)
+gemini_client = None  # Kept for backward compatibility
 rag_engine: RAGEngine = None
 emotion_tracker: EmotionTracker = None
 token_manager: TokenManager = None
@@ -97,10 +100,11 @@ async def lifespan(app: FastAPI):
     - Load models
     - Clean up connections
     """
-    global gemini_client, rag_engine, emotion_tracker, token_manager, memory_manager
+    global llm_client, gemini_client, rag_engine, emotion_tracker, token_manager, memory_manager
     global chromadb_store, reranker, transformer_emotion_detector, redis_memory, metrics_collector
     
     logger.info("Starting Emotional RAG Backend...")
+    logger.info(f"LLM Provider: {settings.llm_provider}")
     logger.info(f"Phase 2 features: ChromaDB={settings.enable_chromadb}, Reranking={settings.enable_reranking}, "
                 f"Transformer Emotions={settings.enable_transformer_emotions}, Redis={settings.enable_redis}, "
                 f"PostgreSQL={settings.enable_postgresql}, Metrics={settings.enable_metrics}")
@@ -110,7 +114,28 @@ async def lifespan(app: FastAPI):
         # Initialize services
         logger.info("Initializing core services...")
         
-        gemini_client = GeminiClient()
+        # Initialize the appropriate LLM provider
+        if settings.llm_provider == "mancer":
+            logger.info("Initializing Mancer API client...")
+            if not settings.mancer_api_key:
+                raise ValueError("MANCER_API_KEY is required when llm_provider=mancer")
+            
+            mancer_provider = MancerClient()
+            llm_client = UnifiedLLMClient(mancer_provider, "mancer")
+            gemini_client = llm_client  # Backward compatibility alias
+            
+        elif settings.llm_provider == "gemini":
+            logger.info("Initializing Gemini API client...")
+            if not settings.gemini_api_key:
+                raise ValueError("GEMINI_API_KEY is required when llm_provider=gemini")
+            
+            gemini_provider = GeminiClient()
+            llm_client = UnifiedLLMClient(gemini_provider, "gemini")
+            gemini_client = llm_client  # Backward compatibility alias
+            
+        else:
+            raise ValueError(f"Invalid llm_provider: {settings.llm_provider}. Must be 'gemini' or 'mancer'")
+        
         rag_engine = RAGEngine()
         emotion_tracker = EmotionTracker()
         token_manager = TokenManager()
@@ -140,17 +165,18 @@ async def lifespan(app: FastAPI):
         memory_manager = MemoryManager(
             rag_engine=rag_engine,
             emotion_tracker=emotion_tracker,
-            token_manager=token_manager
+            token_manager=token_manager,
+            chromadb_store=chromadb_store if settings.enable_chromadb else None
         )
         
         logger.info("All services initialized successfully")
         
-        # Test Gemini connection
-        gemini_healthy = await gemini_client.check_connection()
-        if not gemini_healthy:
-            logger.warning("Gemini API connection check failed - check your API key")
+        # Test LLM connection
+        llm_healthy = await llm_client.check_connection()
+        if not llm_healthy:
+            logger.warning(f"{settings.llm_provider.upper()} API connection check failed - check your API key")
         else:
-            logger.info("Gemini API connection verified")
+            logger.info(f"{settings.llm_provider.upper()} API connection verified")
         
     except Exception as e:
         logger.error(f"Startup failed: {e}", exc_info=True)
@@ -163,6 +189,10 @@ async def lifespan(app: FastAPI):
     try:
         if memory_manager:
             await memory_manager.close_all()
+        
+        # Close LLM client
+        if llm_client:
+            await llm_client.close()
         
         # Phase 2: Cleanup
         if redis_memory:

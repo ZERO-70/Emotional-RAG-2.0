@@ -40,6 +40,7 @@ async def chat_completions(request: ChatCompletionRequest):
         ChatCompletionResponse or StreamingResponse
     """
     from app.main import (
+        llm_client,
         gemini_client,
         memory_manager,
         emotion_tracker,
@@ -267,13 +268,14 @@ async def chat_completions(request: ChatCompletionRequest):
             }
         )
         
-        # Step 6: Call Gemini API
+        # Step 6: Call LLM API (Gemini or Mancer)
         if request.stream:
             # Streaming response
             async def generate_stream():
                 try:
-                    async for chunk in gemini_client.chat_completion_stream(
+                    async for chunk in llm_client.chat_completion_stream(
                         messages=context_messages,
+                        model=request.model,  # Pass model for Mancer
                         temperature=request.temperature or 0.9,
                         max_tokens=request.max_tokens or 800,
                         top_p=request.top_p or 1.0
@@ -290,8 +292,9 @@ async def chat_completions(request: ChatCompletionRequest):
         
         else:
             # Non-streaming response
-            response = await gemini_client.chat_completion(
+            response = await llm_client.chat_completion(
                 messages=context_messages,
+                model=request.model,  # Pass model for Mancer
                 temperature=request.temperature or 0.9,
                 max_tokens=request.max_tokens or 800,
                 top_p=request.top_p or 1.0
@@ -322,7 +325,7 @@ async def chat_completions(request: ChatCompletionRequest):
             if await memory_manager.should_summarize(chat_id):
                 # Run summarization in background
                 asyncio.create_task(
-                    memory_manager.create_summary(chat_id, gemini_client)
+                    memory_manager.create_summary(chat_id, llm_client)
                 )
                 logger.info(f"Triggered background summarization for chat: {chat_id}")
             
@@ -351,18 +354,32 @@ async def list_models():
     List available models.
     
     Returns OpenAI-compatible model list for SillyTavern.
+    Dynamically fetches models from the active provider (Gemini or Mancer).
     """
-    import time
+    from app.main import llm_client
     
-    return ModelListResponse(
-        data=[
-            ModelInfo(
-                id=settings.gemini_model,
-                created=int(time.time()),
-                owned_by="google"
-            )
-        ]
-    )
+    try:
+        # Fetch models from the active provider
+        models = await llm_client.list_models()
+        
+        logger.info(f"Returning {len(models)} models from provider")
+        
+        return ModelListResponse(data=models)
+        
+    except Exception as e:
+        logger.error(f"Error listing models: {e}", exc_info=True)
+        
+        # Fallback: return at least one model to prevent errors
+        import time
+        return ModelListResponse(
+            data=[
+                ModelInfo(
+                    id=settings.gemini_model if settings.llm_provider == "gemini" else settings.mancer_default_model,
+                    created=int(time.time()),
+                    owned_by=settings.llm_provider
+                )
+            ]
+        )
 
 
 @router.post("/api/backends/chat-completions/generate")

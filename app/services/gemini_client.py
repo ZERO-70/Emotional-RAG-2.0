@@ -21,7 +21,8 @@ from app.models.chat import (
     ChatCompletionChoice,
     ChatCompletionChunk,
     Message,
-    UsageInfo
+    UsageInfo,
+    ModelInfo
 )
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,24 @@ class GeminiClient:
         except Exception as e:
             logger.error(f"Gemini connection check failed: {e}", exc_info=True)
             return False
+    
+    async def list_models(self) -> List[ModelInfo]:
+        """
+        List available Gemini models.
+        
+        For Gemini, we return the configured model.
+        In the future, this could query the Gemini API for available models.
+        
+        Returns:
+            List of ModelInfo objects
+        """
+        return [
+            ModelInfo(
+                id=self.model_name,
+                created=int(time.time()),
+                owned_by="google"
+            )
+        ]
     
     @retry(
         retry=retry_if_exception_type((
