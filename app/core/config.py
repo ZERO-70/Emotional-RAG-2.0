@@ -8,9 +8,17 @@ from pathlib import Path
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
     
+    # LLM Provider Selection
+    llm_provider: str = "gemini"  # Options: "gemini" or "mancer"
+    
     # Gemini API Configuration
-    gemini_api_key: str
+    gemini_api_key: Optional[str] = None
     gemini_model: str = "gemini-1.5-pro"
+    
+    # Mancer API Configuration
+    mancer_api_key: Optional[str] = None
+    mancer_base_url: str = "https://neuro.mancer.tech/oai/v1"
+    mancer_default_model: str = "mytholite"
     
     # Server Configuration
     host: str = "0.0.0.0"
@@ -71,13 +79,23 @@ class Settings(BaseSettings):
     # Computed Properties
     @property
     def max_context_tokens(self) -> int:
-        """Maximum tokens for entire context (Gemini 1.5 Pro limit)."""
-        return 128000  # Gemini 1.5 Pro has 128k context window
+        """Maximum tokens for entire context (provider-dependent)."""
+        if self.llm_provider == "mancer":
+            # Most Mancer models have 4k-8k context
+            return 8000
+        else:
+            # Gemini 1.5 Pro has 128k context window
+            return 128000
     
     @property
     def max_response_tokens(self) -> int:
-        """Maximum tokens for model response."""
-        return 8192  # Gemini 1.5 Pro max output
+        """Maximum tokens for model response (provider-dependent)."""
+        if self.llm_provider == "mancer":
+            # Most Mancer models have 2k-4k max output
+            return 2048
+        else:
+            # Gemini 1.5 Pro max output
+            return 8192
     
     @property
     def system_token_budget(self) -> int:

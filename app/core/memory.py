@@ -20,6 +20,10 @@ from app.models.memory import (
 from app.services.rag_engine import RAGEngine
 from app.services.emotion_tracker import EmotionTracker
 
+# Phase 2: ChromaDB integration
+if settings.enable_chromadb:
+    from app.services.chromadb_store import ChromaDBVectorStore
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,7 +39,8 @@ class MemoryManager:
         self,
         rag_engine: RAGEngine,
         emotion_tracker: EmotionTracker,
-        token_manager: TokenManager
+        token_manager: TokenManager,
+        chromadb_store: Optional['ChromaDBVectorStore'] = None
     ):
         """
         Initialize memory manager.
@@ -44,10 +49,12 @@ class MemoryManager:
             rag_engine: RAG engine for embeddings
             emotion_tracker: Emotion detection service
             token_manager: Token counting service
+            chromadb_store: Optional ChromaDB vector store (Phase 2)
         """
         self.rag_engine = rag_engine
         self.emotion_tracker = emotion_tracker
         self.token_manager = token_manager
+        self.chromadb_store = chromadb_store
         
         # Working memory: chat_id -> deque of recent messages
         self.working_memory: Dict[str, deque] = {}
@@ -58,7 +65,8 @@ class MemoryManager:
         # Session metadata
         self.session_metadata: Dict[str, Dict] = {}
         
-        logger.info("Memory manager initialized")
+        storage_backend = "ChromaDB" if chromadb_store else "SQLite BLOB"
+        logger.info(f"Memory manager initialized (storage: {storage_backend})")
     
     async def get_db_connection(self, chat_id: str) -> aiosqlite.Connection:
         """
@@ -82,6 +90,7 @@ class MemoryManager:
     
     async def _init_database_schema(self, conn: aiosqlite.Connection):
         """Initialize database schema if not exists."""
+        # Messages table - embeddings stored in ChromaDB if enabled
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -168,11 +177,19 @@ class MemoryManager:
         if generate_embedding and role in ['user', 'assistant']:
             try:
                 embedding = self.rag_engine.encode(content)
-                embedding_bytes = self.rag_engine.embedding_to_bytes(embedding)
+                
+                # Store in ChromaDB if enabled
+                if self.chromadb_store:
+                    # We'll store after getting message_id
+                    pass
+                else:
+                    # Fallback to SQLite BLOB
+                    embedding_bytes = self.rag_engine.embedding_to_bytes(embedding)
+                    
             except Exception as e:
                 logger.warning(f"Failed to generate embedding: {e}")
         
-        # Store in database
+        # Store in database (metadata)
         conn = await self.get_db_connection(chat_id)
         cursor = await conn.execute("""
             INSERT INTO messages 
@@ -182,13 +199,32 @@ class MemoryManager:
             chat_id,
             role,
             content,
-            embedding_bytes,
+            embedding_bytes,  # Will be None if using ChromaDB
             emotion,
             importance or 0.5
         ))
         
         await conn.commit()
         message_id = cursor.lastrowid
+        
+        # Store embedding in ChromaDB if enabled
+        if self.chromadb_store and generate_embedding and role in ['user', 'assistant']:
+            try:
+                await self.chromadb_store.add_embeddings(
+                    chat_id=chat_id,
+                    embeddings=[embedding],
+                    documents=[content],
+                    metadatas=[{
+                        "role": role,
+                        "emotion": emotion or "neutral",
+                        "importance_score": importance or 0.5,
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "message_id": message_id
+                    }],
+                    ids=[f"msg_{message_id}"]
+                )
+            except Exception as e:
+                logger.error(f"Failed to store embedding in ChromaDB: {e}")
         
         logger.debug(
             f"Stored message {message_id}",
@@ -197,7 +233,8 @@ class MemoryManager:
                 "role": role,
                 "content_length": len(content),
                 "emotion": emotion,
-                "importance": importance
+                "importance": importance,
+                "storage": "chromadb" if self.chromadb_store else "sqlite"
             }
         )
         
@@ -280,26 +317,69 @@ class MemoryManager:
             try:
                 # Store combined embedding
                 full_embedding = self.rag_engine.encode(persona_text)
-                embedding_bytes = self.rag_engine.embedding_to_bytes(full_embedding)
                 
-                # Also store chunk embeddings in messages table as 'system' role
-                chunk_embeddings = self.rag_engine.encode_batch(chunks)
-                conn = await self.get_db_connection(chat_id)
-                
-                for chunk, chunk_emb in zip(chunks, chunk_embeddings):
-                    emb_bytes = self.rag_engine.embedding_to_bytes(chunk_emb)
-                    await conn.execute("""
-                        INSERT INTO messages
-                        (chat_id, role, content, embedding, importance_score)
-                        VALUES (?, 'system', ?, ?, 1.0)
-                    """, (chat_id, chunk, emb_bytes))
-                
-                await conn.commit()
+                if self.chromadb_store:
+                    # Store persona chunks in ChromaDB
+                    chunk_embeddings = self.rag_engine.encode_batch(chunks)
+                    
+                    chunk_docs = []
+                    chunk_metas = []
+                    chunk_ids = []
+                    
+                    for idx, (chunk, chunk_emb) in enumerate(zip(chunks, chunk_embeddings)):
+                        chunk_docs.append(chunk)
+                        chunk_metas.append({
+                            "role": "system",
+                            "source": "persona",
+                            "importance_score": 1.0,
+                            "chunk_index": idx,
+                            "timestamp": datetime.utcnow().isoformat()
+                        })
+                        chunk_ids.append(f"persona_{chat_id}_chunk_{idx}")
+                    
+                    await self.chromadb_store.add_embeddings(
+                        chat_id=chat_id,
+                        embeddings=chunk_embeddings,
+                        documents=chunk_docs,
+                        metadatas=chunk_metas,
+                        ids=chunk_ids
+                    )
+                    
+                    # Also store full persona embedding
+                    await self.chromadb_store.add_embeddings(
+                        chat_id=chat_id,
+                        embeddings=[full_embedding],
+                        documents=[persona_text],
+                        metadatas=[{
+                            "role": "system",
+                            "source": "persona_full",
+                            "importance_score": 1.0,
+                            "timestamp": datetime.utcnow().isoformat()
+                        }],
+                        ids=[f"persona_{chat_id}_full"]
+                    )
+                else:
+                    # Fallback to SQLite BLOB storage
+                    embedding_bytes = self.rag_engine.embedding_to_bytes(full_embedding)
+                    
+                    # Also store chunk embeddings in messages table as 'system' role
+                    chunk_embeddings = self.rag_engine.encode_batch(chunks)
+                    conn = await self.get_db_connection(chat_id)
+                    
+                    for chunk, chunk_emb in zip(chunks, chunk_embeddings):
+                        emb_bytes = self.rag_engine.embedding_to_bytes(chunk_emb)
+                        await conn.execute("""
+                            INSERT INTO messages
+                            (chat_id, role, content, embedding, importance_score)
+                            VALUES (?, 'system', ?, ?, 1.0)
+                        """, (chat_id, chunk, emb_bytes))
+                    
+                    await conn.commit()
                 
             except Exception as e:
                 logger.warning(f"Failed to generate persona embeddings: {e}")
         
-        # Store main persona
+        # Store main persona in SQLite
         conn = await self.get_db_connection(chat_id)
         await conn.execute("""
             INSERT OR REPLACE INTO personas
@@ -311,7 +391,11 @@ class MemoryManager:
         
         logger.info(
             f"Stored persona for chat: {chat_id}",
-            extra={"chunks": len(chunks), "length": len(persona_text)}
+            extra={
+                "chunks": len(chunks),
+                "length": len(persona_text),
+                "storage": "chromadb" if self.chromadb_store else "sqlite"
+            }
         )
     
     async def get_persona(self, chat_id: str) -> Optional[str]:
@@ -347,58 +431,127 @@ class MemoryManager:
         # Generate query embedding
         query_embedding = self.rag_engine.encode(query)
         
-        # Retrieve messages with embeddings
-        conn = await self.get_db_connection(chat_id)
-        async with conn.execute("""
-            SELECT content, role, emotional_state, importance_score, embedding
-            FROM messages
-            WHERE chat_id = ? AND embedding IS NOT NULL
-            ORDER BY importance_score DESC
-            LIMIT 50
-        """, (chat_id,)) as cursor:
-            rows = await cursor.fetchall()
+        if self.chromadb_store:
+            # Use ChromaDB for semantic search
+            try:
+                results = await self.chromadb_store.search_embeddings(
+                    chat_id=chat_id,
+                    query_embedding=query_embedding,
+                    top_k=top_k * 2  # Get more candidates for emotional boosting
+                )
+                
+                # Convert ChromaDB results to RAG engine format
+                candidates = []
+                for doc_id, document, metadata, distance in results:
+                    # ChromaDB uses distance (lower is better)
+                    # Convert to similarity score (higher is better)
+                    similarity = 1 - distance
+                    
+                    candidates.append({
+                        "content": document,
+                        "source": metadata.get("source", "message"),
+                        "emotion": metadata.get("emotion", "neutral"),
+                        "importance_score": metadata.get("importance_score", 0.5),
+                        "similarity": similarity,
+                        "role": metadata.get("role", "user")
+                    })
+                
+                # Apply emotional boosting
+                if query_emotion:
+                    for candidate in candidates:
+                        if candidate["emotion"] == query_emotion and query_emotion != "neutral":
+                            boost = 1 + (candidate["importance_score"] * 0.3)
+                            candidate["similarity"] *= boost
+                
+                # Sort by final similarity and take top_k
+                candidates.sort(key=lambda x: x["similarity"], reverse=True)
+                top_results = candidates[:top_k]
+                
+                # Format results
+                formatted_parts = []
+                for result in top_results:
+                    if result["source"] == "persona" or result["source"] == "persona_full":
+                        formatted_parts.append(f"[Character Info]: {result['content']}")
+                    else:
+                        formatted_parts.append(f"[Memory]: {result['content']}")
+                
+                formatted = "\n".join(formatted_parts)
+                
+                # Truncate to token limit
+                formatted = self.token_manager.truncate_to_token_limit(
+                    formatted,
+                    max_tokens=max_tokens,
+                    preserve_start=True
+                )
+                
+                logger.info(
+                    f"Retrieved {len(top_results)} RAG results from ChromaDB",
+                    extra={
+                        "chat_id": chat_id,
+                        "results_count": len(top_results),
+                        "query_emotion": query_emotion
+                    }
+                )
+                
+                return formatted
+                
+            except Exception as e:
+                logger.error(f"ChromaDB search failed: {e}", exc_info=True)
+                return ""
         
-        # Convert to candidate embeddings
-        candidates = []
-        for row in rows:
-            if row["embedding"]:
-                embedding = self.rag_engine.bytes_to_embedding(row["embedding"])
-                metadata = {
-                    "content": row["content"],
-                    "source": "persona" if row["role"] == "system" else "message",
-                    "emotion": row["emotional_state"],
-                    "importance_score": row["importance_score"]
+        else:
+            # Fallback to SQLite BLOB retrieval
+            conn = await self.get_db_connection(chat_id)
+            async with conn.execute("""
+                SELECT content, role, emotional_state, importance_score, embedding
+                FROM messages
+                WHERE chat_id = ? AND embedding IS NOT NULL
+                ORDER BY importance_score DESC
+                LIMIT 50
+            """, (chat_id,)) as cursor:
+                rows = await cursor.fetchall()
+            
+            # Convert to candidate embeddings
+            candidates = []
+            for row in rows:
+                if row["embedding"]:
+                    embedding = self.rag_engine.bytes_to_embedding(row["embedding"])
+                    metadata = {
+                        "content": row["content"],
+                        "source": "persona" if row["role"] == "system" else "message",
+                        "emotion": row["emotional_state"],
+                        "importance_score": row["importance_score"]
+                    }
+                    candidates.append((embedding, metadata))
+            
+            if not candidates:
+                return ""
+            
+            # Search with emotional boosting
+            results = self.rag_engine.search_embeddings(
+                query_embedding=query_embedding,
+                candidate_embeddings=candidates,
+                top_k=top_k,
+                emotional_boost=True,
+                query_emotion=query_emotion
+            )
+            
+            # Format for context
+            formatted = self.rag_engine.format_results_for_context(
+                results,
+                max_tokens=max_tokens
+            )
+            
+            logger.info(
+                f"Retrieved {len(results)} RAG results from SQLite",
+                extra={
+                    "chat_id": chat_id,
+                    "results_count": len(results),
+                    "query_emotion": query_emotion
                 }
-                candidates.append((embedding, metadata))
-        
-        if not candidates:
-            return ""
-        
-        # Search with emotional boosting
-        results = self.rag_engine.search_embeddings(
-            query_embedding=query_embedding,
-            candidate_embeddings=candidates,
-            top_k=top_k,
-            emotional_boost=True,
-            query_emotion=query_emotion
-        )
-        
-        # Format for context
-        formatted = self.rag_engine.format_results_for_context(
-            results,
-            max_tokens=max_tokens
-        )
-        
-        logger.info(
-            f"Retrieved {len(results)} RAG results",
-            extra={
-                "chat_id": chat_id,
-                "results_count": len(results),
-                "query_emotion": query_emotion
-            }
-        )
-        
-        return formatted
+            )
+            
+            return formatted
     
     async def should_summarize(self, chat_id: str) -> bool:
         """Check if conversation should be summarized."""
