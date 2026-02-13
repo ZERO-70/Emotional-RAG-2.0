@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
     
     # LLM Provider Selection
-    llm_provider: str = "gemini"  # Options: "gemini" or "mancer"
+    llm_provider: str = "gemini"  # Options: "gemini", "mancer", or "openrouter"
     
     # Gemini API Configuration
     gemini_api_key: Optional[str] = None
@@ -19,6 +19,13 @@ class Settings(BaseSettings):
     mancer_api_key: Optional[str] = None
     mancer_base_url: str = "https://neuro.mancer.tech/oai/v1"
     mancer_default_model: str = "mytholite"
+    
+    # OpenRouter API Configuration
+    openrouter_api_key: Optional[str] = None
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_default_model: str = "google/gemma-2-9b-it:free"
+    openrouter_site_url: Optional[str] = None
+    openrouter_site_name: Optional[str] = None
     
     # Server Configuration
     host: str = "0.0.0.0"
@@ -83,6 +90,9 @@ class Settings(BaseSettings):
         if self.llm_provider == "mancer":
             # Most Mancer models have 4k-8k context
             return 8000
+        elif self.llm_provider == "openrouter":
+            # OpenRouter free tier models typically 4k-8k context
+            return 8000
         else:
             # Gemini 1.5 Pro has 128k context window
             return 128000
@@ -92,6 +102,9 @@ class Settings(BaseSettings):
         """Maximum tokens for model response (provider-dependent)."""
         if self.llm_provider == "mancer":
             # Most Mancer models have 2k-4k max output
+            return 2048
+        elif self.llm_provider == "openrouter":
+            # OpenRouter free tier models typically 2k max output
             return 2048
         else:
             # Gemini 1.5 Pro max output
