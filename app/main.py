@@ -124,6 +124,16 @@ async def lifespan(app: FastAPI):
             llm_client = UnifiedLLMClient(mancer_provider, "mancer")
             gemini_client = llm_client  # Backward compatibility alias
             
+        elif settings.llm_provider == "openrouter":
+            logger.info("Initializing OpenRouter API client...")
+            if not settings.openrouter_api_key:
+                raise ValueError("OPENROUTER_API_KEY is required when llm_provider=openrouter")
+            
+            from app.services.openrouter_client import OpenRouterClient
+            openrouter_provider = OpenRouterClient()
+            llm_client = UnifiedLLMClient(openrouter_provider, "openrouter")
+            gemini_client = llm_client  # Backward compatibility alias
+            
         elif settings.llm_provider == "gemini":
             logger.info("Initializing Gemini API client...")
             if not settings.gemini_api_key:
@@ -134,7 +144,7 @@ async def lifespan(app: FastAPI):
             gemini_client = llm_client  # Backward compatibility alias
             
         else:
-            raise ValueError(f"Invalid llm_provider: {settings.llm_provider}. Must be 'gemini' or 'mancer'")
+            raise ValueError(f"Invalid llm_provider: {settings.llm_provider}. Must be 'gemini', 'mancer', or 'openrouter'")
         
         rag_engine = RAGEngine()
         emotion_tracker = EmotionTracker()
@@ -171,12 +181,25 @@ async def lifespan(app: FastAPI):
         
         logger.info("All services initialized successfully")
         
-        # Test LLM connection
-        llm_healthy = await llm_client.check_connection()
-        if not llm_healthy:
-            logger.warning(f"{settings.llm_provider.upper()} API connection check failed - check your API key")
-        else:
-            logger.info(f"{settings.llm_provider.upper()} API connection verified")
+        # Test LLM provider connection
+        if settings.llm_provider == "gemini":
+            gemini_ok = await llm_client.check_connection()
+            if gemini_ok:
+                logger.info("GEMINI API connection verified")
+            else:
+                logger.warning("GEMINI API connection check failed - continuing anyway")
+        elif settings.llm_provider == "mancer":
+            mancer_ok = await llm_client.check_connection()
+            if mancer_ok:
+                logger.info("MANCER API connection verified")
+            else:
+                logger.warning("MANCER API connection check failed - continuing anyway")
+        elif settings.llm_provider == "openrouter":
+            openrouter_ok = await llm_client.check_connection()
+            if openrouter_ok:
+                logger.info("OPENROUTER API connection verified")
+            else:
+                logger.warning("OPENROUTER API connection check failed - continuing anyway")
         
     except Exception as e:
         logger.error(f"Startup failed: {e}", exc_info=True)

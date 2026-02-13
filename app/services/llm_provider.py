@@ -58,7 +58,7 @@ class UnifiedLLMClient:
     Unified LLM client that delegates to the appropriate provider.
     
     This class provides a single interface for the rest of the application,
-    abstracting away whether we're using Gemini or Mancer.
+    abstracting away whether we're using Gemini, Mancer, or OpenRouter.
     """
     
     def __init__(self, provider: LLMProvider, provider_name: str):
@@ -66,7 +66,7 @@ class UnifiedLLMClient:
         Initialize unified client.
         
         Args:
-            provider: The actual provider instance (GeminiClient or MancerClient)
+            provider: The actual provider instance (GeminiClient, MancerClient, or OpenRouterClient)
             provider_name: Name of the provider for logging
         """
         self.provider = provider
@@ -118,9 +118,9 @@ class UnifiedLLMClient:
             ChatCompletionResponse
         """
         try:
-            # For Mancer, we pass the model parameter
+            # For Mancer and OpenRouter, we pass the model parameter
             # For Gemini, the model is configured in settings
-            if self.provider_name == "mancer":
+            if self.provider_name in ["mancer", "openrouter"]:
                 return await self.provider.chat_completion(
                     messages=messages,
                     model=model,
@@ -164,7 +164,7 @@ class UnifiedLLMClient:
             SSE-formatted chunks
         """
         try:
-            if self.provider_name == "mancer":
+            if self.provider_name in ["mancer", "openrouter"]:
                 async for chunk in self.provider.chat_completion_stream(
                     messages=messages,
                     model=model,
