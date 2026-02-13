@@ -36,7 +36,7 @@ httpx==0.28.1
 huggingface-hub==0.36.0
 humanfriendly==10.0
 idna==3.11
-importlib_metadata==8.7.0
+importlib_metadata==6.11.0
 importlib_resources==6.5.2
 iniconfig==2.3.0
 Jinja2==3.1.6
@@ -70,12 +70,12 @@ nvidia-nvshmem-cu12==3.3.20
 nvidia-nvtx-cu12==12.8.90
 oauthlib==3.3.1
 onnxruntime==1.23.2
-opentelemetry-api==1.38.0
-opentelemetry-exporter-otlp-proto-common==1.38.0
-opentelemetry-exporter-otlp-proto-grpc==1.38.0
-opentelemetry-proto==1.38.0
-opentelemetry-sdk==1.38.0
-opentelemetry-semantic-conventions==0.59b0
+opentelemetry-api==1.20.0
+opentelemetry-exporter-otlp-proto-common==1.20.0
+opentelemetry-exporter-otlp-proto-grpc==1.20.0
+opentelemetry-proto==1.20.0
+opentelemetry-sdk==1.20.0
+opentelemetry-semantic-conventions==0.41b0
 orjson==3.11.4
 overrides==7.7.0
 packaging==25.0
@@ -87,7 +87,7 @@ pluggy==1.6.0
 posthog==5.4.0
 prometheus_client==0.23.1
 proto-plus==1.26.1
-protobuf==6.33.0
+protobuf
 psycopg2-binary==2.9.11
 pyasn1==0.6.1
 pyasn1_modules==0.4.2

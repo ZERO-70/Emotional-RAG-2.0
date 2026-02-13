@@ -243,9 +243,9 @@ async def chat_completions(request: ChatCompletionRequest):
             f"Context built: {context_result.total_tokens} tokens",
             extra={
                 "total_tokens": context_result.total_tokens,
-                "system_tokens": context_result.system_tokens,
-                "rag_tokens": context_result.rag_tokens,
-                "history_tokens": context_result.history_tokens,
+                "system_tokens": context_result.token_breakdown.get('system', 0),
+                "rag_tokens": context_result.token_breakdown.get('rag', 0),
+                "history_tokens": context_result.token_breakdown.get('history', 0),
                 "truncated": was_truncated,
                 "history_count": len(fitted_history),
                 "has_rag_context": bool(rag_context)
