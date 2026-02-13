@@ -35,37 +35,25 @@ class ChromaDBVectorStore:
     """
     
     def __init__(self):
-        """Initialize ChromaDB client with persistence."""
+        """Initialize ChromaDB vector store."""
         if not CHROMADB_AVAILABLE:
             raise ImportError(
                 "chromadb not installed. Install with: pip install chromadb>=1.3.0"
             )
         
-        # Client-server mode if host/port configured, otherwise persistent
-        if settings.chromadb_host and settings.chromadb_port:
-            logger.info(
-                "Connecting to ChromaDB server",
-                extra={
-                    "host": settings.chromadb_host,
-                    "port": settings.chromadb_port
-                }
+        # Use persistent local client instead of HTTP client
+        logger.info(
+            "Initializing ChromaDB persistent client",
+            extra={"path": settings.chromadb_path}
+        )
+        
+        self.client = chromadb.PersistentClient(
+            path=settings.chromadb_path,
+            settings=ChromaSettings(
+                anonymized_telemetry=False,
+                allow_reset=False
             )
-            self.client = chromadb.HttpClient(
-                host=settings.chromadb_host,
-                port=settings.chromadb_port
-            )
-        else:
-            logger.info(
-                "Using persistent ChromaDB",
-                extra={"path": settings.chromadb_path}
-            )
-            self.client = chromadb.PersistentClient(
-                path=settings.chromadb_path,
-                settings=ChromaSettings(
-                    anonymized_telemetry=False,
-                    allow_reset=False
-                )
-            )
+        )
         
         self._collections: Dict[str, Any] = {}
         logger.info("ChromaDB vector store initialized")

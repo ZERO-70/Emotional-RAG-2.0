@@ -259,11 +259,14 @@ class TokenManager:
         })
         
         return ContextBuildResult(
-            messages=all_messages,
+            system_prompt=system_text,
+            rag_context=rag_context,
+            conversation_history=history_messages,
             total_tokens=total_tokens,
-            system_tokens=system_tokens,
-            rag_tokens=rag_tokens,
-            history_tokens=history_tokens,
-            retrieved_chunks=rag_context.count('relevance:') if rag_context else 0,
-            summarized=False  # Set by caller if summarization was used
+            token_breakdown={
+                'system': system_tokens,
+                'rag': rag_tokens,
+                'history': history_tokens,
+                'current': current_tokens
+            }
         )
