@@ -39,7 +39,8 @@ services:
       - HOST=0.0.0.0
       - PORT=8001
     volumes:
-      - ./data/sessions:/app/data/sessions
+      - ./data:/app/data                           # Persistent ChromaDB + manifest
+      - ./knowledge_base:/app/knowledge_base:ro    # Client knowledge base (read-only)
       - ./logs:/app/logs
     depends_on:
       chromadb:

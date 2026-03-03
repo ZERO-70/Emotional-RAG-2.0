@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
     
     # LLM Provider Selection
-    llm_provider: str = "gemini"  # Options: "gemini", "mancer", or "openrouter"
+    llm_provider: str = "openrouter"  # Options: "gemini", "mancer", or "openrouter"
     
     # Gemini API Configuration
     gemini_api_key: Optional[str] = None
@@ -42,7 +42,10 @@ class Settings(BaseSettings):
     rag_top_k: int = 3
     
     # Phase 2: Feature Flags
-    enable_chromadb: bool = False
+    enable_chromadb: bool = True
+    store_chat_embeddings: bool = True  # Set False to stop writing new embeddings (saves space)
+    ingest_knowledge_base: bool = True  # Set False to disable knowledge_base ingestion on startup
+    reset_ingestion_on_start: bool = False  # Set True to delete manifest and force full re-ingest on every startup
     enable_reranking: bool = False
     enable_transformer_emotions: bool = False
     enable_redis: bool = False

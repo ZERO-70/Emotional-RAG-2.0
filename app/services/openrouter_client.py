@@ -296,27 +296,38 @@ class OpenRouterClient:
                 logger.debug("Starting OpenRouter streaming response")
                 
                 async with self.client.stream("POST", url, json=payload) as response:
-                    response.raise_for_status()
-                    
+                    # Read response body first so it's available if raise_for_status() throws
+                    if response.status_code != 200:
+                        await response.aread()
+                        if response.status_code == 429:
+                            logger.warning("OpenRouter streaming rate limit exceeded (429)")
+                            yield 'data: {"error": "Rate limit exceeded. Please wait a moment and try again.", "code": 429}\n\n'
+                            return
+                        response.raise_for_status()
+
                     async for line in response.aiter_lines():
                         if line.startswith("data: "):
                             # Forward SSE chunk directly
                             yield f"{line}\n\n"
-                            
+
                             # Check for [DONE] message
                             if line.strip() == "data: [DONE]":
                                 break
-                
+
                 logger.debug("Streaming response completed")
-                
+
             except httpx.HTTPStatusError as e:
-                logger.error(f"Streaming HTTP error: {e.response.status_code}")
-                error_chunk = f'data: {{"error": "HTTP {e.response.status_code}: {e.response.text}"}}\n\n'
-                yield error_chunk
+                # response body is already read above, safe to access .text
+                status = e.response.status_code
+                try:
+                    body = e.response.text
+                except Exception:
+                    body = "(unreadable)"
+                logger.error(f"Streaming HTTP error: {status} - {body}")
+                yield f'data: {{"error": "HTTP {status} from OpenRouter"}}\n\n'
             except Exception as e:
                 logger.error(f"Streaming error: {e}")
-                error_chunk = f'data: {{"error": "{str(e)}"}}\n\n'
-                yield error_chunk
+                yield f'data: {{"error": "{str(e)}"}}\n\n'
     
     async def close(self):
         """Close the HTTP client."""

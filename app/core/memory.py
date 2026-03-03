@@ -434,10 +434,19 @@ class MemoryManager:
         if self.chromadb_store:
             # Use ChromaDB for semantic search
             try:
+                # Stage 1: Bi-encoder retrieval — fetch more candidates when reranker will refine
+                fetch_k = top_k * 2
+                try:
+                    import app.main as _main_module
+                    if _main_module.reranker is not None:
+                        fetch_k = max(20, top_k * 6)  # Wider net for cross-encoder to pick from
+                except Exception:
+                    pass
+
                 results = await self.chromadb_store.search_embeddings(
                     chat_id=chat_id,
                     query_embedding=query_embedding,
-                    top_k=top_k * 2  # Get more candidates for emotional boosting
+                    top_k=fetch_k
                 )
                 
                 # Convert ChromaDB results to RAG engine format
@@ -456,16 +465,57 @@ class MemoryManager:
                         "role": metadata.get("role", "user")
                     })
                 
-                # Apply emotional boosting
-                if query_emotion:
+                # Apply emotional boosting (only when NOT using reranker — reranker overrides scores)
+                try:
+                    import app.main as _main_module
+                    _has_reranker = _main_module.reranker is not None
+                except Exception:
+                    _has_reranker = False
+
+                if not _has_reranker and query_emotion:
                     for candidate in candidates:
                         if candidate["emotion"] == query_emotion and query_emotion != "neutral":
                             boost = 1 + (candidate["importance_score"] * 0.3)
                             candidate["similarity"] *= boost
-                
-                # Sort by final similarity and take top_k
+
+                # Stage 2: Cross-encoder reranking (much more accurate relevance scoring)
+                if _has_reranker and candidates:
+                    try:
+                        rerank_input = [
+                            (c["content"], c["content"], {}, c["similarity"])
+                            for c in candidates
+                        ]
+                        reranked = _main_module.reranker.rerank(query, rerank_input, top_k=top_k)
+                        # Rebuild candidates list from reranker output (already sorted best-first)
+                        reranked_contents = {r[1]: r[3] for r in reranked}
+                        candidates = [
+                            {**c, "similarity": reranked_contents[c["content"]]}
+                            for c in candidates
+                            if c["content"] in reranked_contents
+                        ]
+                        logger.info(
+                            "Reranker applied to chat memory",
+                            extra={"chat_id": chat_id, "candidates_in": len(rerank_input),
+                                   "results_out": len(candidates)}
+                        )
+                    except Exception as rr_err:
+                        logger.warning(f"Reranker failed, falling back to cosine similarity: {rr_err}")
+
+                # Sort by final score (descending) and apply minimum threshold
                 candidates.sort(key=lambda x: x["similarity"], reverse=True)
-                top_results = candidates[:top_k]
+
+                # Apply minimum similarity threshold — drop results that are not relevant enough
+                MIN_SIMILARITY = 0.35
+                qualified = [c for c in candidates if c["similarity"] >= MIN_SIMILARITY]
+                top_results = qualified[:top_k]
+
+                if not top_results:
+                    logger.info(
+                        "No RAG results met the minimum similarity threshold",
+                        extra={"chat_id": chat_id, "threshold": MIN_SIMILARITY,
+                               "best_score": round(candidates[0]["similarity"], 4) if candidates else 0}
+                    )
+                    return ""
                 
                 # Format results
                 formatted_parts = []
@@ -492,7 +542,29 @@ class MemoryManager:
                         "query_emotion": query_emotion
                     }
                 )
-                
+
+                # Log each retrieved result so you can see what the LLM receives
+                for i, result in enumerate(top_results):
+                    logger.info(
+                        f"RAG result [{i+1}/{len(top_results)}]",
+                        extra={
+                            "chat_id": chat_id,
+                            "similarity": round(result['similarity'], 4),
+                            "emotion": result.get('emotion', 'n/a'),
+                            "source": result.get('source', 'n/a'),
+                            "preview": result['content'][:150].replace('\n', ' ')
+                        }
+                    )
+
+                logger.info(
+                    f"RAG block injected into prompt",
+                    extra={
+                        "chat_id": chat_id,
+                        "rag_block_chars": len(formatted),
+                        "rag_block_preview": formatted[:300].replace('\n', ' | ')
+                    }
+                )
+
                 return formatted
                 
             except Exception as e:

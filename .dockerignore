@@ -1,0 +1,66 @@
+# Virtual environment (biggest space saver)
+venv/
+.venv/
+ENV/
+env/
+
+# Git
+.git/
+.github/
+.gitignore
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Data and logs (created at runtime)
+data/
+logs/
+
+# Knowledge base (mounted as volume at runtime — never bake into image)
+knowledge_base/
+
+# Environment files (passed at runtime via --env-file)
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Documentation
+*.md
+LICENSE
+docs/
+
+# Docker files themselves
+Dockerfile
+docker-compose.yml
+
+# Misc
+*.tmp
+temp/
+.cache/
+models/
+.DS_Store
+Thumbs.db
+.ipynb_checkpoints/
+monitoring/
+sql/
+examples/
+debug_memory.py
+verify.py
+setup.py
+run.sh

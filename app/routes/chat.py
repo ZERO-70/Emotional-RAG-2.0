@@ -136,14 +136,72 @@ async def chat_completions(request: ChatCompletionRequest):
             top_k=settings.rag_top_k,
             max_tokens=settings.rag_token_budget
         )
-        
+
+        # Step 3b: Retrieve from knowledge_base collection (client's ingested docs/chats)
+        kb_context = ""
+        try:
+            import app.main as _main_module
+            _ki = _main_module.knowledge_ingester
+            _reranker = _main_module.reranker
+            if _ki is not None:
+                query_embedding = rag_engine.encode(user_message)
+                # Fetch more candidates when reranker will refine them
+                kb_fetch_k = 15 if _reranker is not None else 5
+                kb_results = await _ki.search(query_embedding, top_k=kb_fetch_k)
+                if kb_results:
+                    # Stage 2: Rerank KB results for true relevance (if enabled)
+                    if _reranker is not None:
+                        try:
+                            rerank_input = [(r[0], r[1], r[2], r[3]) for r in kb_results]
+                            kb_results = _reranker.rerank(user_message, rerank_input, top_k=5)
+                            # Reranker returns (id, doc, meta, score) — higher score = more relevant
+                            # Convert score back to distance-like value for threshold (score > 0 = relevant)
+                            kb_results = [(r[0], r[1], r[2], 1.0 - min(max(r[3] / 10.0 + 0.5, 0), 1)) for r in kb_results]
+                            logger.info("Reranker applied to KB results",
+                                        extra={"chat_id": chat_id, "results": len(kb_results)})
+                        except Exception as rr_err:
+                            logger.warning(f"KB reranker failed, using cosine order: {rr_err}")
+                            kb_results.sort(key=lambda x: x[3])  # fallback: sort by distance
+                    else:
+                        # No reranker: sort best-first by cosine distance
+                        kb_results.sort(key=lambda x: x[3])
+
+                    kb_parts = []
+                    for _, doc, meta, dist in kb_results:
+                        if dist < 0.70:  # Only genuinely relevant KB chunks
+                            source = meta.get("title", meta.get("filename", "unknown"))
+                            kb_parts.append(f"[{source}]\n{doc}")
+                            logger.info(
+                                "KB result",
+                                extra={
+                                    "chat_id": chat_id,
+                                    "title": source,
+                                    "distance": round(dist, 4),
+                                    "preview": doc[:120].replace("\n", " ")
+                                }
+                            )
+                    kb_context = "\n\n---\n\n".join(kb_parts)
+                    if kb_context:
+                        logger.info(
+                            "KB block injected into prompt",
+                            extra={"chat_id": chat_id, "kb_chars": len(kb_context), "results": len(kb_parts)}
+                        )
+                    else:
+                        logger.info("KB search: no results met relevance threshold",
+                                    extra={"chat_id": chat_id, "candidates": len(kb_results),
+                                           "min_dist": round(min(d for _, _, _, d in kb_results), 4) if kb_results else 1.0})
+            else:
+                logger.debug("knowledge_ingester is None — KB search skipped")
+        except Exception as kb_err:
+            logger.warning(f"Knowledge base search failed: {kb_err}", exc_info=True)
+
         # DEBUG: Log RAG retrieval results
         logger.debug(
-            f"RAG context retrieved: {len(rag_context) if rag_context else 0} characters",
+            f"RAG context retrieved: {len(rag_context) if rag_context else 0} chars, KB context: {len(kb_context)} chars",
             extra={
                 "chat_id": chat_id,
                 "rag_context_length": len(rag_context) if rag_context else 0,
-                "rag_context_preview": rag_context[:200] if rag_context else None
+                "kb_context_length": len(kb_context),
             }
         )
         
@@ -215,10 +273,18 @@ async def chat_completions(request: ChatCompletionRequest):
                 "content": system_prompt
             })
         
-        if rag_context:
+        # Always inject RAG block so the LLM is aware retrieval ran (even on cold start)
+        rag_block = rag_context if rag_context else "[No relevant memories retrieved yet — this is the start of a new conversation]"
+        context_messages.append({
+            "role": "system",
+            "content": f"## Retrieved Memory Context\n{rag_block}"
+        })
+
+        # Inject knowledge base context if available
+        if kb_context:
             context_messages.append({
                 "role": "system",
-                "content": rag_context
+                "content": f"## Knowledge Base Context\n(From client's ingested documents and past conversations)\n\n{kb_context}"
             })
         
         # Add conversation history
@@ -270,23 +336,72 @@ async def chat_completions(request: ChatCompletionRequest):
         
         # Step 6: Call LLM API (Gemini or Mancer)
         if request.stream:
-            # Streaming response
+            # Streaming response — accumulate text to store embeddings after stream ends
+            accumulated_chunks = []
+
             async def generate_stream():
                 try:
                     async for chunk in llm_client.chat_completion_stream(
                         messages=context_messages,
-                        model=request.model,  # Pass model for Mancer
+                        model=request.model,
                         temperature=request.temperature or 0.9,
                         max_tokens=request.max_tokens or 800,
                         top_p=request.top_p or 1.0
                     ):
+                        # Extract text content from SSE chunk for accumulation
+                        if chunk and chunk.startswith("data: ") and chunk.strip() != "data: [DONE]":
+                            try:
+                                import json
+                                payload = json.loads(chunk[6:].strip())
+                                delta = payload.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                                if delta:
+                                    accumulated_chunks.append(delta)
+                            except Exception:
+                                pass
                         yield chunk
                 except Exception as e:
                     logger.error(f"Streaming error: {e}")
                     yield f'data: {{"error": "{str(e)}"}}\n\n'
-            
+
+            async def stream_and_store():
+                """Wrap generator: yield chunks, then store embeddings when done."""
+                async for chunk in generate_stream():
+                    yield chunk
+                # After stream completes, store messages with embeddings
+                try:
+                    assistant_text = "".join(accumulated_chunks)
+                    if assistant_text:
+                        _store_embed = settings.store_chat_embeddings
+                        # Only embed messages with meaningful content (avoids 'Hi' noise in RAG)
+                        _embed_user = _store_embed and len(user_message.strip()) >= 15
+                        _embed_asst = _store_embed and len(assistant_text.strip()) >= 15
+                        await memory_manager.store_message(
+                            chat_id=chat_id,
+                            role="user",
+                            content=user_message,
+                            emotion=emotional_state.emotion,
+                            importance=emotional_state.importance_score,
+                            generate_embedding=_embed_user
+                        )
+                        await memory_manager.store_message(
+                            chat_id=chat_id,
+                            role="assistant",
+                            content=assistant_text,
+                            emotion=None,
+                            importance=0.5,
+                            generate_embedding=_embed_asst
+                        )
+                        logger.info(
+                            f"Stored streaming messages",
+                            extra={"chat_id": chat_id, "embeddings": _store_embed,
+                                   "user_embedded": _embed_user, "asst_embedded": _embed_asst,
+                                   "assistant_length": len(assistant_text)}
+                        )
+                except Exception as store_err:
+                    logger.error(f"Failed to store streaming embeddings: {store_err}")
+
             return StreamingResponse(
-                generate_stream(),
+                stream_and_store(),
                 media_type="text/event-stream"
             )
         
@@ -302,23 +417,27 @@ async def chat_completions(request: ChatCompletionRequest):
             
             assistant_message = response.choices[0].message.content
             
-            # Step 7: Store messages
+            # Step 7: Store messages (embeddings only if enabled in .env)
+            _store_embed = settings.store_chat_embeddings
+            # Only embed messages with meaningful content (avoids 'Hi' noise in RAG)
+            _embed_user = _store_embed and len(user_message.strip()) >= 15
+            _embed_asst = _store_embed and len(assistant_message.strip()) >= 15
             await memory_manager.store_message(
                 chat_id=chat_id,
                 role="user",
                 content=user_message,
                 emotion=emotional_state.emotion,
                 importance=emotional_state.importance_score,
-                generate_embedding=True
+                generate_embedding=_embed_user
             )
-            
+
             await memory_manager.store_message(
                 chat_id=chat_id,
                 role="assistant",
                 content=assistant_message,
                 emotion=None,
                 importance=0.5,
-                generate_embedding=True
+                generate_embedding=_embed_asst
             )
             
             # Step 8: Check if summarization needed

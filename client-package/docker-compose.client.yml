@@ -1,0 +1,86 @@
+# ============================================================
+# Emotional RAG Backend — CLIENT DEPLOYMENT COMPOSE FILE
+# Services: API + ChromaDB only (Redis/PostgreSQL disabled)
+# ============================================================
+# Usage:
+#   docker compose -f docker-compose.client.yml up -d
+#   docker compose -f docker-compose.client.yml down
+
+version: '3.8'
+
+services:
+
+  # ── Main Application ────────────────────────────────────────
+  api:
+    image: emotional-rag:latest        # pre-built, loaded from .tar.gz
+    container_name: emotional-rag-api
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env                           # client creates this from .env.example
+    environment:
+      # Override ChromaDB host to point at the sidecar container
+      - CHROMADB_HOST=chromadb
+      - CHROMADB_PORT=8000
+
+      # These features need Redis/PG — keep disabled for client deployment
+      - ENABLE_REDIS=false
+      - ENABLE_POSTGRESQL=false
+      - ENABLE_METRICS=false
+
+      # These run inside the container with no extra services needed
+      - ENABLE_CHROMADB=true
+      - ENABLE_RERANKING=true
+      - ENABLE_TRANSFORMER_EMOTIONS=true
+
+      # Knowledge Base: reset manifest on every start so all files are
+      # always fully re-ingested into ChromaDB (no stale skips on first run).
+      - INGEST_KNOWLEDGE_BASE=true
+      - RESET_INGESTION_ON_START=true
+    volumes:
+      - ./data:/app/data               # persists session DBs, embeddings
+      - ./knowledge_base:/app/knowledge_base:ro  # read-only persona/docs
+      - ./logs:/app/logs
+    depends_on:
+      chromadb:
+        condition: service_healthy
+    networks:
+      - rag-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ── ChromaDB Vector Store ────────────────────────────────────
+  # NOTE: ChromaDB is a SEPARATE image — it is NOT baked into
+  # emotional-rag:latest. Its data lives in the named volume
+  # 'chromadb-data' below, not inside any image layer.
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: emotional-rag-chromadb
+    ports:
+      - "127.0.0.1:8000:8000"         # localhost-only for security
+    environment:
+      - ANONYMIZED_TELEMETRY=False
+      - ALLOW_RESET=False             # prevents accidental data wipe
+    volumes:
+      - chromadb-data:/chroma/chroma  # persisted in named Docker volume
+    networks:
+      - rag-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+networks:
+  rag-net:
+    driver: bridge
+
+volumes:
+  chromadb-data:    # ChromaDB vector data — persisted between restarts

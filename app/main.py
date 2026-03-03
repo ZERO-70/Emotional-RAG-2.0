@@ -1,6 +1,7 @@
 """FastAPI application initialization with dependency injection."""
 
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -16,6 +17,7 @@ from app.services.llm_provider import UnifiedLLMClient
 from app.services.rag_engine import RAGEngine
 from app.services.emotion_tracker import EmotionTracker
 from app.routes import chat, health
+from app.services.knowledge_ingester import KnowledgeIngester
 
 # Phase 2 imports (conditional)
 if settings.enable_chromadb:
@@ -88,6 +90,7 @@ reranker = None
 transformer_emotion_detector = None
 redis_memory = None
 metrics_collector = None
+knowledge_ingester = None
 
 
 @asynccontextmanager
@@ -101,7 +104,7 @@ async def lifespan(app: FastAPI):
     - Clean up connections
     """
     global llm_client, gemini_client, rag_engine, emotion_tracker, token_manager, memory_manager
-    global chromadb_store, reranker, transformer_emotion_detector, redis_memory, metrics_collector
+    global chromadb_store, reranker, transformer_emotion_detector, redis_memory, metrics_collector, knowledge_ingester
     
     logger.info("Starting Emotional RAG Backend...")
     logger.info(f"LLM Provider: {settings.llm_provider}")
@@ -180,7 +183,23 @@ async def lifespan(app: FastAPI):
         )
         
         logger.info("All services initialized successfully")
-        
+
+        # Knowledge base ingestion (runs after ChromaDB is ready)
+        if settings.enable_chromadb and settings.ingest_knowledge_base:
+            kb_path = os.path.join(os.getcwd(), "knowledge_base")
+            knowledge_ingester = KnowledgeIngester(
+                rag_engine=rag_engine,
+                chromadb_store=chromadb_store
+            )
+            stats = knowledge_ingester.run_ingestion(kb_path)
+            logger.info(
+                "Knowledge base ingestion complete",
+                extra=stats
+            )
+            # Start file watcher to auto-detect new files
+            if os.path.isdir(kb_path):
+                knowledge_ingester.start_watcher(kb_path)
+
         # Test LLM provider connection
         if settings.llm_provider == "gemini":
             gemini_ok = await llm_client.check_connection()
@@ -223,7 +242,10 @@ async def lifespan(app: FastAPI):
         
         if chromadb_store:
             await chromadb_store.close()
-        
+
+        if knowledge_ingester:
+            knowledge_ingester.stop_watcher()
+
         logger.info("Shutdown complete")
     except Exception as e:
         logger.error(f"Shutdown error: {e}", exc_info=True)
