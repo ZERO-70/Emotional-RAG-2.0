@@ -44,8 +44,19 @@ logs/
 # Data
 data/sessions/*.db
 data/embeddings/
+data/chromadb/
 *.sqlite
 *.db
+*.bin
+
+# Large binary / packaged files
+*.tar.gz
+*.zip
+emotional-rag-client.zip
+
+# Knowledge base user data
+knowledge_base/Chats/
+client-package/knowledge_base/Chats/
 
 # OS
 .DS_Store
