@@ -1,285 +1,245 @@
 #!/usr/bin/env python3
-"""
-Verify project installation and structure.
-Run this after setup to ensure everything is in place.
-"""
+"""Verify installation and project structure for Emotional RAG Backend."""
 
 import sys
-import os
 from pathlib import Path
 from typing import List, Tuple
 
 
 def check_file_exists(path: str) -> bool:
-    """Check if file exists."""
     return Path(path).exists()
 
 
 def check_directory_exists(path: str) -> bool:
-    """Check if directory exists."""
     return Path(path).is_dir()
 
 
 def verify_project_structure() -> Tuple[int, int]:
-    """
-    Verify all required files and directories exist.
-    Returns (passed, total) counts.
-    """
-    checks = []
-    
-    # Core application files
+    """Verify required files/directories for current workspace layout."""
+    checks: List[bool] = []
+
     core_files = [
         ("app/__init__.py", "App package"),
-        ("app/main.py", "FastAPI application"),
+        ("app/main.py", "FastAPI app"),
         ("app/core/config.py", "Configuration"),
         ("app/core/memory.py", "Memory manager"),
         ("app/core/token_manager.py", "Token manager"),
-        ("app/models/chat.py", "Chat models"),
-        ("app/models/memory.py", "Memory models"),
-        ("app/services/gemini_client.py", "Gemini client"),
-        ("app/services/rag_engine.py", "RAG engine"),
-        ("app/services/emotion_tracker.py", "Emotion tracker"),
         ("app/routes/chat.py", "Chat routes"),
         ("app/routes/health.py", "Health routes"),
+        ("app/services/llm_provider.py", "LLM provider abstraction"),
+        ("app/services/rag_engine.py", "RAG engine"),
+        ("app/services/emotion_tracker.py", "Emotion tracker"),
+        ("app/services/knowledge_ingester.py", "Knowledge ingester"),
     ]
-    
-    # Configuration files
+
+    optional_service_files = [
+        ("app/services/chromadb_store.py", "ChromaDB store"),
+        ("app/services/reranker.py", "Reranker"),
+        ("app/services/transformer_emotions.py", "Transformer emotions"),
+        ("app/services/redis_memory.py", "Redis memory"),
+        ("app/services/metrics.py", "Metrics collector"),
+    ]
+
     config_files = [
         (".env.example", "Environment template"),
         ("requirements.txt", "Dependencies"),
-        ("run.sh", "Startup script"),
+        ("run.sh", "Run script"),
         ("setup.py", "Setup script"),
-    ]
-    
-    # Documentation files
-    doc_files = [
-        ("README.md", "Main documentation"),
-        ("QUICKSTART.md", "Quick start guide"),
+        ("README.md", "README"),
+        ("QUICKSTART.md", "Quickstart"),
         ("ARCHITECTURE.md", "Architecture docs"),
-        ("PROJECT_SUMMARY.md", "Project summary"),
-        ("LICENSE", "License file"),
+        ("LICENSE", "License"),
     ]
-    
-    # Test files
+
     test_files = [
+        ("tests/test_api.py", "API tests"),
         ("tests/test_memory.py", "Memory tests"),
         ("tests/test_emotion.py", "Emotion tests"),
-        ("tests/test_api.py", "API tests"),
     ]
-    
-    # Example files
-    example_files = [
-        ("examples/test_usage.py", "Usage examples"),
-    ]
-    
-    # Data directories
+
     directories = [
         ("app", "App directory"),
         ("app/core", "Core directory"),
-        ("app/models", "Models directory"),
-        ("app/services", "Services directory"),
         ("app/routes", "Routes directory"),
+        ("app/services", "Services directory"),
         ("tests", "Tests directory"),
         ("examples", "Examples directory"),
         ("data", "Data directory"),
-        ("data/sessions", "Sessions directory"),
-        ("data/embeddings", "Embeddings directory"),
-        ("logs", "Logs directory"),
+        ("data/sessions", "Session DB directory"),
+        ("knowledge_base", "Knowledge base directory"),
     ]
-    
+
     print("=" * 70)
     print("Project Structure Verification".center(70))
     print("=" * 70)
-    
-    # Check core files
-    print("\n📦 Core Application Files:")
+
+    print("\nCore Files:")
     for file_path, description in core_files:
         exists = check_file_exists(file_path)
         checks.append(exists)
-        icon = "✅" if exists else "❌"
-        print(f"  {icon} {description:30s} {file_path}")
-    
-    # Check config files
-    print("\n⚙️  Configuration Files:")
+        marker = "OK" if exists else "MISSING"
+        print(f"  [{marker:7}] {description:30s} {file_path}")
+
+    print("\nOptional Service Files:")
+    for file_path, description in optional_service_files:
+        exists = check_file_exists(file_path)
+        marker = "OK" if exists else "MISSING"
+        print(f"  [{marker:7}] {description:30s} {file_path}")
+
+    print("\nConfig and Docs:")
     for file_path, description in config_files:
         exists = check_file_exists(file_path)
         checks.append(exists)
-        icon = "✅" if exists else "❌"
-        print(f"  {icon} {description:30s} {file_path}")
-    
-    # Check documentation
-    print("\n📚 Documentation:")
-    for file_path, description in doc_files:
-        exists = check_file_exists(file_path)
-        checks.append(exists)
-        icon = "✅" if exists else "❌"
-        print(f"  {icon} {description:30s} {file_path}")
-    
-    # Check tests
-    print("\n🧪 Tests:")
+        marker = "OK" if exists else "MISSING"
+        print(f"  [{marker:7}] {description:30s} {file_path}")
+
+    print("\nTests:")
     for file_path, description in test_files:
         exists = check_file_exists(file_path)
         checks.append(exists)
-        icon = "✅" if exists else "❌"
-        print(f"  {icon} {description:30s} {file_path}")
-    
-    # Check examples
-    print("\n💡 Examples:")
-    for file_path, description in example_files:
-        exists = check_file_exists(file_path)
-        checks.append(exists)
-        icon = "✅" if exists else "❌"
-        print(f"  {icon} {description:30s} {file_path}")
-    
-    # Check directories
-    print("\n📁 Directories:")
+        marker = "OK" if exists else "MISSING"
+        print(f"  [{marker:7}] {description:30s} {file_path}")
+
+    print("\nDirectories:")
     for dir_path, description in directories:
         exists = check_directory_exists(dir_path)
         checks.append(exists)
-        icon = "✅" if exists else "❌"
-        print(f"  {icon} {description:30s} {dir_path}")
-    
-    # Summary
+        marker = "OK" if exists else "MISSING"
+        print(f"  [{marker:7}] {description:30s} {dir_path}")
+
     passed = sum(checks)
     total = len(checks)
-    
+
     print("\n" + "=" * 70)
-    print(f"Results: {passed}/{total} checks passed")
+    print(f"Results: {passed}/{total} required checks passed")
     print("=" * 70)
-    
+
     return passed, total
 
 
 def check_python_version() -> bool:
-    """Check Python version >= 3.10."""
     version = sys.version_info
     required = (3, 10)
-    
-    print("\n🐍 Python Version Check:")
-    print(f"   Current: {version.major}.{version.minor}.{version.micro}")
-    print(f"   Required: {required[0]}.{required[1]}+")
-    
-    if version >= required:
-        print("   ✅ Python version OK")
-        return True
-    else:
-        print("   ❌ Python version too old")
-        return False
+
+    print("\nPython Version:")
+    print(f"  Current : {version.major}.{version.minor}.{version.micro}")
+    print(f"  Required: {required[0]}.{required[1]}+")
+
+    ok = version >= required
+    print("  Status  : OK" if ok else "  Status  : TOO OLD")
+    return ok
 
 
 def check_virtual_env() -> bool:
-    """Check if virtual environment exists."""
-    print("\n🔧 Virtual Environment Check:")
-    
-    venv_exists = Path("venv").exists()
-    if venv_exists:
-        print("   ✅ Virtual environment found")
-        return True
-    else:
-        print("   ❌ Virtual environment not found")
-        print("   Run: python3 -m venv venv")
-        return False
+    print("\nVirtual Environment:")
+    ok = Path("venv").exists()
+    print("  Status  : OK" if ok else "  Status  : MISSING")
+    if not ok:
+        print("  Action  : python3 -m venv venv")
+    return ok
+
+
+def _read_env() -> str:
+    env_path = Path(".env")
+    if not env_path.exists():
+        return ""
+    return env_path.read_text(encoding="utf-8", errors="replace")
 
 
 def check_env_file() -> bool:
-    """Check if .env file is configured."""
-    print("\n⚙️  Environment Configuration:")
-    
-    env_exists = Path(".env").exists()
-    if not env_exists:
-        print("   ❌ .env file not found")
-        print("   Run: cp .env.example .env")
+    """Check .env and provider-specific key based on LLM_PROVIDER."""
+    print("\nEnvironment Configuration:")
+
+    env_path = Path(".env")
+    if not env_path.exists():
+        print("  Status  : MISSING")
+        print("  Action  : cp .env.example .env")
         return False
-    
-    # Check if GEMINI_API_KEY is set
-    with open(".env", "r") as f:
-        content = f.read()
-        if "your_api_key_here" in content:
-            print("   ⚠️  .env exists but GEMINI_API_KEY not configured")
-            print("   Please edit .env and add your API key")
-            return False
-        elif "GEMINI_API_KEY=" in content:
-            print("   ✅ .env configured")
-            return True
-    
-    return False
+
+    content = _read_env()
+
+    provider = "openrouter"
+    for line in content.splitlines():
+        if line.strip().startswith("LLM_PROVIDER="):
+            provider = line.split("=", 1)[1].strip().lower()
+            break
+
+    key_var = {
+        "openrouter": "OPENROUTER_API_KEY",
+        "gemini": "GEMINI_API_KEY",
+        "mancer": "MANCER_API_KEY",
+    }.get(provider, "OPENROUTER_API_KEY")
+
+    key_present = False
+    for line in content.splitlines():
+        if line.strip().startswith(f"{key_var}="):
+            value = line.split("=", 1)[1].strip()
+            if value and "your_" not in value and "_here" not in value:
+                key_present = True
+            break
+
+    print(f"  Provider: {provider}")
+    print(f"  Key var : {key_var}")
+    print("  Key set : YES" if key_present else "  Key set : NO")
+
+    if not key_present:
+        print("  Note    : Set a real API key in .env before running production calls.")
+
+    return True
 
 
 def count_lines_of_code() -> int:
-    """Count total lines of Python code."""
     total = 0
     for py_file in Path(".").rglob("*.py"):
-        if "__pycache__" not in str(py_file):
-            with open(py_file) as f:
-                total += len(f.readlines())
+        if "__pycache__" in str(py_file):
+            continue
+        try:
+            total += len(py_file.read_text(encoding="utf-8", errors="replace").splitlines())
+        except Exception:
+            pass
     return total
 
 
-def print_summary():
-    """Print project summary."""
+def print_summary() -> None:
     loc = count_lines_of_code()
-    
+    py_files = len(list(Path(".").rglob("*.py")))
+    md_files = len(list(Path(".").rglob("*.md")))
+
     print("\n" + "=" * 70)
     print("Project Summary".center(70))
     print("=" * 70)
-    print(f"\n📊 Statistics:")
-    print(f"   Lines of Code: {loc:,}")
-    print(f"   Python Files: {len(list(Path('.').rglob('*.py')))}")
-    print(f"   Documentation: {len(list(Path('.').rglob('*.md')))}")
-    
-    print(f"\n🎯 Features:")
-    print(f"   ✅ OpenAI-compatible API")
-    print(f"   ✅ Multi-tiered memory system")
-    print(f"   ✅ RAG with semantic search")
-    print(f"   ✅ Emotion tracking")
-    print(f"   ✅ Token management")
-    print(f"   ✅ Gemini integration")
-    print(f"   ✅ Automatic summarization")
-    print(f"   ✅ SillyTavern compatible")
+    print(f"\nLines of Python code : {loc:,}")
+    print(f"Python files         : {py_files}")
+    print(f"Markdown files       : {md_files}")
 
 
-def main():
-    """Run all verification checks."""
-    print("\n🔍 Emotional RAG Backend - Installation Verification\n")
-    
-    all_checks = []
-    
-    # Check Python version
-    all_checks.append(check_python_version())
-    
-    # Check project structure
+def main() -> int:
+    print("\nEmotional RAG Backend - Verification\n")
+
+    checks: List[bool] = []
+
+    checks.append(check_python_version())
     passed, total = verify_project_structure()
-    all_checks.append(passed == total)
-    
-    # Check virtual environment
-    all_checks.append(check_virtual_env())
-    
-    # Check environment configuration
-    env_ok = check_env_file()
-    all_checks.append(env_ok)
-    
-    # Print summary
+    checks.append(passed == total)
+    checks.append(check_virtual_env())
+    checks.append(check_env_file())
+
     print_summary()
-    
-    # Final verdict
+
     print("\n" + "=" * 70)
-    if all(all_checks):
-        print("✅ Installation Verified - Ready to Run!".center(70))
+    if all(checks):
+        print("VERIFIED: installation looks good".center(70))
         print("=" * 70)
         print("\nNext steps:")
-        print("  1. Activate virtual environment: source venv/bin/activate")
-        print("  2. Start the server: ./run.sh")
-        print("  3. Test: curl http://localhost:8000/health")
-        print("  4. Configure SillyTavern to http://localhost:8000/v1")
+        print("  1. source venv/bin/activate")
+        print("  2. ./run.sh")
+        print("  3. curl http://localhost:8001/health")
+        print("  4. Set SillyTavern API URL to http://localhost:8001/v1")
         return 0
-    else:
-        print("⚠️  Installation Incomplete - Please Fix Issues Above".center(70))
-        print("=" * 70)
-        
-        if not env_ok:
-            print("\n⚠️  IMPORTANT: Configure .env file with your Gemini API key!")
-        
-        return 1
+
+    print("ISSUES FOUND: review output above".center(70))
+    print("=" * 70)
+    return 1
 
 
 if __name__ == "__main__":
