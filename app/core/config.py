@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     openrouter_default_model: str = "google/gemma-2-9b-it:free"
     openrouter_site_url: Optional[str] = None
     openrouter_site_name: Optional[str] = None
+
+    # OpenAI API Configuration (used for embeddings)
+    openai_api_key: Optional[str] = None
     
     # Server Configuration
     host: str = "0.0.0.0"
@@ -38,7 +41,9 @@ class Settings(BaseSettings):
     db_path: str = "./data/sessions"
     
     # RAG Configuration
-    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_provider: str = "openai"  # "openai" or "local"
+    embedding_model: str = "text-embedding-3-small"
+    embedding_dimensions: int = 1536
     rag_top_k: int = 3
     
     # Phase 2: Feature Flags
@@ -51,7 +56,10 @@ class Settings(BaseSettings):
     enable_redis: bool = False
     enable_postgresql: bool = False
     enable_metrics: bool = False
-    
+    enable_notion_tools: bool = False  # Let characters call Notion MCP tools (search/read/create)
+    notion_tool_max_iters: int = 5     # Max tool-call rounds per response
+    notion_default_parent_id: str = ""  # Notion data_source/database id new pages are created under
+
     # Phase 2: ChromaDB Configuration
     chromadb_path: str = "./data/chromadb"
     chromadb_host: Optional[str] = None
@@ -81,7 +89,20 @@ class Settings(BaseSettings):
     rag_token_percent: int = 25
     history_token_percent: int = 35
     response_token_percent: int = 20
-    
+
+    # Conversation history is controlled SOLELY by message count, not token budget.
+    # We send the last N messages verbatim. Keeping this small keeps every request
+    # tiny and cheap (the previous token-budget approach let history grow to ~60k
+    # tokens/call, which dominated cost). history_token_percent above no longer
+    # governs history length — it is retained only for legacy budget accounting.
+    history_message_limit: int = 6
+
+    # Prompt Caching (Anthropic/Claude via OpenRouter)
+    # Adds cache_control breakpoints to the stable prompt prefix (character card +
+    # conversation history). No-op for non-Claude models. TTL options: "5m" or "1h".
+    prompt_cache_enabled: bool = True
+    prompt_cache_ttl: str = "1h"
+
     # Logging Configuration
     log_level: str = "INFO"
     log_format: str = "json"
@@ -94,8 +115,11 @@ class Settings(BaseSettings):
             # Most Mancer models have 4k-8k context
             return 8000
         elif self.llm_provider == "openrouter":
-            # OpenRouter free tier models typically 4k-8k context
-            return 8000
+            # Claude Opus 4.x via OpenRouter has a 1M context window. We cap well
+            # below that: enough to keep conversation history append-only (stable,
+            # cacheable prefix) and give characters long memory, without sending
+            # the entire 1M every turn. History/RAG split is tuned via *_token_percent.
+            return 150000
         else:
             # Gemini 1.5 Pro has 128k context window
             return 128000
@@ -108,7 +132,7 @@ class Settings(BaseSettings):
             return 2048
         elif self.llm_provider == "openrouter":
             # OpenRouter free tier models typically 2k max output
-            return 2048
+            return 4096
         else:
             # Gemini 1.5 Pro max output
             return 8192

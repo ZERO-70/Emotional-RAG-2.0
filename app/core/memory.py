@@ -505,7 +505,7 @@ class MemoryManager:
                 candidates.sort(key=lambda x: x["similarity"], reverse=True)
 
                 # Apply minimum similarity threshold — drop results that are not relevant enough
-                MIN_SIMILARITY = 0.35
+                MIN_SIMILARITY = -4.0
                 qualified = [c for c in candidates if c["similarity"] >= MIN_SIMILARITY]
                 top_results = qualified[:top_k]
 

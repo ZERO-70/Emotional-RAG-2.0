@@ -1,0 +1,4 @@
+# Bird – favorite color 
+Category: Preference
+Character: Bird
+Content: Bird's favorite color is teal.
