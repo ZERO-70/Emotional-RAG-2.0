@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     openrouter_default_model: str = "google/gemma-2-9b-it:free"
     openrouter_site_url: Optional[str] = None
     openrouter_site_name: Optional[str] = None
+    # Enable OpenRouter's built-in web search plugin so characters can research
+    # live info. Runs a web search on relevant queries (adds cost/latency per
+    # message). Set OPENROUTER_WEB_SEARCH=false in .env to disable.
+    openrouter_web_search: bool = True
 
     # OpenAI API Configuration (used for embeddings)
     openai_api_key: Optional[str] = None

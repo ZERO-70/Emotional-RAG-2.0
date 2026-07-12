@@ -170,6 +170,9 @@ class OpenRouterClient:
                     "top_p": top_p,
                     "stream": False
                 }
+                # Let the model research live info via OpenRouter's web plugin.
+                if settings.openrouter_web_search:
+                    payload["plugins"] = [{"id": "web"}]
                 
                 logger.debug(
                     f"Calling OpenRouter API",
@@ -292,6 +295,9 @@ class OpenRouterClient:
                     "top_p": top_p,
                     "stream": True
                 }
+                # Let the model research live info via OpenRouter's web plugin.
+                if settings.openrouter_web_search:
+                    payload["plugins"] = [{"id": "web"}]
                 
                 logger.debug("Starting OpenRouter streaming response")
                 

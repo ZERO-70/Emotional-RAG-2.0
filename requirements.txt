@@ -142,3 +142,8 @@ watchfiles==1.1.1
 websocket-client==1.9.0
 websockets==15.0.1
 zipp==3.23.0
+
+# Added during setup: required by app/services/rag_engine.py (OpenAI embeddings) and
+# app/services/knowledge_ingester.py (file watcher) but missing from the original pin list.
+openai==2.45.0
+watchdog==6.0.0
