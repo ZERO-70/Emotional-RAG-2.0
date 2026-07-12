@@ -141,7 +141,38 @@ class UnifiedLLMClient:
         except Exception as e:
             logger.error(f"Chat completion failed with {self.provider_name}: {e}")
             raise
-    
+
+    async def chat_completion_agentic(
+        self,
+        messages: List[Dict],
+        tools: List[Dict],
+        tool_executor,
+        model: Optional[str] = None,
+        temperature: float = 0.9,
+        max_tokens: int = 800,
+        top_p: float = 1.0,
+        max_iters: int = 5,
+    ) -> ChatCompletionResponse:
+        """Run a provider-native tool-calling loop if the underlying provider
+        supports it (currently OpenRouter); otherwise fall back to a normal
+        completion with no tools so behaviour degrades gracefully."""
+        if hasattr(self.provider, "chat_completion_agentic"):
+            return await self.provider.chat_completion_agentic(
+                messages=messages,
+                tools=tools,
+                tool_executor=tool_executor,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                top_p=top_p,
+                max_iters=max_iters,
+            )
+        logger.info(f"Provider {self.provider_name} has no tool loop — answering without tools")
+        return await self.chat_completion(
+            messages=messages, model=model,
+            temperature=temperature, max_tokens=max_tokens, top_p=top_p,
+        )
+
     async def chat_completion_stream(
         self,
         messages: List[Dict],

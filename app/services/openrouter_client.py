@@ -2,6 +2,7 @@
 
 import logging
 import asyncio
+import json
 import time
 import uuid
 import httpx
@@ -168,9 +169,12 @@ class OpenRouterClient:
                     "temperature": temperature,
                     "max_tokens": min(max_tokens, settings.max_response_tokens),
                     "top_p": top_p,
-                    "stream": False
+                    "stream": False,
+                    # Ask OpenRouter to return token accounting (incl. cached tokens
+                    # and cache_discount) so prompt-cache hits are observable in logs.
+                    "usage": {"include": True}
                 }
-                
+
                 logger.debug(
                     f"Calling OpenRouter API",
                     extra={
@@ -191,25 +195,35 @@ class OpenRouterClient:
                 data = response.json()
                 
                 # Extract response content
-                assistant_message = data['choices'][0]['message']['content']
+                assistant_message = data["choices"][0]["message"]["content"]
+                finish_reason = data["choices"][0].get("finish_reason", "unknown")
                 
                 # Get usage info
                 usage = data.get('usage', {})
                 input_tokens = usage.get('prompt_tokens', 0)
                 output_tokens = usage.get('completion_tokens', 0)
                 total_tokens = usage.get('total_tokens', input_tokens + output_tokens)
-                
+
+                # Prompt-cache accounting (Anthropic via OpenRouter).
+                # cached_tokens = portion of the prompt served from cache (read).
+                prompt_details = usage.get('prompt_tokens_details') or {}
+                cached_tokens = prompt_details.get('cached_tokens', 0)
+                cache_discount = usage.get('cache_discount')
+
                 # Track usage
                 self.total_input_tokens += input_tokens
                 self.total_output_tokens += output_tokens
-                
+
                 logger.info(
                     f"OpenRouter response received",
                     extra={
                         "latency_seconds": round(latency, 2),
                         "input_tokens": input_tokens,
                         "output_tokens": output_tokens,
-                        "model": selected_model
+                        "cached_tokens": cached_tokens,
+                        "cache_discount": cache_discount,
+                        "model": selected_model,
+                        "finish_reason": finish_reason
                     }
                 )
                 
@@ -255,7 +269,134 @@ class OpenRouterClient:
             except Exception as e:
                 logger.error(f"OpenRouter API error: {e}")
                 raise
-    
+
+    async def _agentic_raw_call(
+        self,
+        messages: List[Dict],
+        tools: Optional[List[Dict]],
+        model: Optional[str],
+        temperature: float,
+        max_tokens: int,
+        top_p: float,
+    ) -> Dict:
+        """One OpenRouter call returning the raw assistant message dict (which
+        may include tool_calls) plus usage. Used by the agentic tool loop."""
+        async with self.rate_limiter:
+            url = f"{self.base_url}/chat/completions"
+            selected_model = model or self.default_model
+            payload = {
+                "model": selected_model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": min(max_tokens, settings.max_response_tokens),
+                "top_p": top_p,
+                "stream": False,
+                "usage": {"include": True},
+            }
+            if tools:
+                payload["tools"] = tools
+                payload["tool_choice"] = "auto"
+            response = await self.client.post(url, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            choice = data["choices"][0]
+            usage = data.get("usage", {}) or {}
+            self.total_input_tokens += usage.get("prompt_tokens", 0)
+            self.total_output_tokens += usage.get("completion_tokens", 0)
+            # Observe prompt-cache effectiveness in the tool path (tools sit in the
+            # cached prefix behind the card breakpoint).
+            cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
+            logger.info(
+                "Agentic LLM call",
+                extra={
+                    "with_tools": bool(tools),
+                    "input_tokens": usage.get("prompt_tokens", 0),
+                    "cached_tokens": cached,
+                    "output_tokens": usage.get("completion_tokens", 0),
+                    "finish_reason": choice.get("finish_reason", "stop"),
+                },
+            )
+            return {
+                "message": choice.get("message", {}) or {},
+                "finish_reason": choice.get("finish_reason", "stop"),
+                "usage": usage,
+            }
+
+    def _final_response(self, model, content: str, usage: dict) -> ChatCompletionResponse:
+        return ChatCompletionResponse(
+            id=f"chatcmpl-{uuid.uuid4().hex[:8]}",
+            created=int(time.time()),
+            model=model or self.default_model,
+            choices=[ChatCompletionChoice(
+                index=0,
+                message=Message(role="assistant", content=content),
+                finish_reason="stop",
+            )],
+            usage=UsageInfo(
+                prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0),
+                total_tokens=usage.get("total_tokens", 0),
+            ),
+        )
+
+    async def chat_completion_agentic(
+        self,
+        messages: List[Dict],
+        tools: List[Dict],
+        tool_executor,
+        model: Optional[str] = None,
+        temperature: float = 0.9,
+        max_tokens: int = 800,
+        top_p: float = 1.0,
+        max_iters: int = 5,
+    ) -> ChatCompletionResponse:
+        """Tool-calling loop: let the model call `tools` (run via the async
+        `tool_executor(name, args) -> str`) until it returns a final answer.
+        Returns a normal ChatCompletionResponse so SillyTavern is unchanged.
+        If the loop hits max_iters, force one final tool-free answer."""
+        convo = list(messages)
+        last_usage: dict = {}
+        for round_idx in range(max_iters):
+            raw = await self._agentic_raw_call(
+                convo, tools=tools, model=model,
+                temperature=temperature, max_tokens=max_tokens, top_p=top_p,
+            )
+            msg = raw["message"]
+            last_usage = raw["usage"] or last_usage
+            tool_calls = msg.get("tool_calls") or []
+            if not tool_calls:
+                return self._final_response(model, msg.get("content") or "", last_usage)
+            # Assistant turn requesting tools, then the tool results.
+            convo.append({
+                "role": "assistant",
+                "content": msg.get("content") or "",
+                "tool_calls": tool_calls,
+            })
+            for tc in tool_calls:
+                fn = tc.get("function") or {}
+                name = fn.get("name", "")
+                try:
+                    args = json.loads(fn.get("arguments") or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    args = {}
+                try:
+                    result = await tool_executor(name, args)
+                except Exception as e:
+                    result = f"Tool '{name}' raised: {e}"
+                convo.append({
+                    "role": "tool",
+                    "tool_call_id": tc.get("id"),
+                    "content": str(result)[:8000],
+                })
+            logger.info("Notion tool round executed",
+                        extra={"round": round_idx + 1, "calls": len(tool_calls)})
+        # Exhausted iterations — force a final answer with no tools.
+        raw = await self._agentic_raw_call(
+            convo, tools=None, model=model,
+            temperature=temperature, max_tokens=max_tokens, top_p=top_p,
+        )
+        return self._final_response(model, raw["message"].get("content") or "", raw["usage"] or last_usage)
+
     async def chat_completion_stream(
         self,
         messages: List[Dict],

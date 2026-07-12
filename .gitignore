@@ -78,3 +78,6 @@ models/
 # Temporary files
 *.tmp
 temp/
+
+# backup files
+*.bak*

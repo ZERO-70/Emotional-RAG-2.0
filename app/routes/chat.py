@@ -19,6 +19,63 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _supports_anthropic_caching(model: Optional[str]) -> bool:
+    """True for Claude models, which use explicit cache_control breakpoints."""
+    if not model:
+        return False
+    m = model.lower()
+    return "anthropic/" in m or "claude" in m
+
+
+def _mark_cached(message: dict, ttl: str) -> dict:
+    """Return a copy of message with a cache_control breakpoint on its content.
+
+    Converts plain-string content into Anthropic's structured text-block form so
+    the breakpoint can be attached; leaves existing block-form content intact.
+    """
+    content = message.get("content")
+    cache_control = {"type": "ephemeral", "ttl": ttl}
+    if isinstance(content, list):
+        if not content:
+            return message
+        blocks = list(content)
+        blocks[-1] = {**blocks[-1], "cache_control": cache_control}
+        return {**message, "content": blocks}
+    return {
+        **message,
+        "content": [
+            {"type": "text", "text": content, "cache_control": cache_control}
+        ],
+    }
+
+
+def apply_prompt_caching(messages: list, model: Optional[str],
+                         cache_card: bool, cache_history: bool) -> list:
+    """Attach Anthropic prompt-cache breakpoints to the stable prompt prefix.
+
+    Message layout produced by the caller is:
+        [card?]  history...  [volatile system]  [user]
+    Breakpoint #1 -> the card (messages[0], if present).
+    Breakpoint #2 -> the last history message (index -3: volatile is -2, user is -1).
+    Returns messages unchanged for non-Claude models or when caching is disabled.
+    """
+    if not settings.prompt_cache_enabled or not _supports_anthropic_caching(model):
+        return messages
+
+    ttl = settings.prompt_cache_ttl
+    msgs = list(messages)
+
+    if cache_card and msgs and msgs[0].get("role") == "system":
+        msgs[0] = _mark_cached(msgs[0], ttl)
+
+    if cache_history and len(msgs) >= 3:
+        idx = len(msgs) - 3  # last history turn, before [volatile, user]
+        if msgs[idx].get("role") in ("user", "assistant"):
+            msgs[idx] = _mark_cached(msgs[idx], ttl)
+
+    return msgs
+
+
 @router.post("/v1/chat/completions", response_model=ChatCompletionResponse)
 async def chat_completions(request: ChatCompletionRequest):
     """
@@ -59,7 +116,8 @@ async def chat_completions(request: ChatCompletionRequest):
                 "message_count": len(request.messages),
                 "stream": request.stream,
                 "temperature": request.temperature,
-                "user_field": request.user  # Log the actual user field
+                "user_field": request.user,
+                "request_max_tokens": request.max_tokens
             }
         )
         
@@ -236,65 +294,103 @@ async def chat_completions(request: ChatCompletionRequest):
         budget = token_manager.allocate_token_budget()
         
         # Build system prompt
-        system_parts = []
-        
+        # Separate the STABLE character card from VOLATILE per-turn context so the
+        # card sits in a cacheable prefix. The card is identical every turn for a
+        # given character; emotion/RAG/KB change each turn and must NOT precede the
+        # history in the prompt, or they'd invalidate the cache on every request.
+        card_prompt = ""
         if persona:
-            # Truncate persona to budget
-            persona_truncated = token_manager.truncate_to_token_limit(
+            card_prompt = token_manager.truncate_to_token_limit(
                 persona,
                 max_tokens=budget['system'],
                 preserve_start=True
             )
-            system_parts.append(persona_truncated)
-        
-        # Add emotional context
+
+        # Volatile per-turn signal (emotion) — injected after history, near the user turn
         emotional_context = emotion_tracker.get_emotional_context_prompt(
             current_emotion=emotional_state.emotion,
             current_confidence=emotional_state.confidence
         )
-        if emotional_context:
-            system_parts.append(emotional_context)
-        
-        system_prompt = "\n\n".join(system_parts)
-        
-        # Fit history to budget
-        fitted_history, was_truncated = token_manager.fit_messages_to_budget(
-            history_messages,
-            budget=budget['history'],
-            keep_recent=10
-        )
-        
-        # Build final context
+
+        # Kept for downstream token accounting/logging
+        system_prompt = card_prompt
+
+        # Conversation history is controlled SOLELY by message count: keep only the
+        # last N messages (settings.history_message_limit, default 6). No token
+        # budgeting — this caps every request to a handful of recent turns so the
+        # prompt stays tiny and cheap. (Previously a ~60k-token history budget let
+        # long chats balloon to ~65k tokens/call, which dominated the bill.)
+        history_limit = settings.history_message_limit
+        fitted_history = history_messages[-history_limit:] if history_limit > 0 else []
+        was_truncated = len(history_messages) > len(fitted_history)
+
+        # Build final context — ORDER MATTERS for prompt caching:
+        #   [card]  ->  [conversation history]  ->  [volatile: emotion + RAG + KB]  ->  [user]
+        # Stable content first so a cacheable prefix exists; volatile retrieval last
+        # so it never invalidates the cached card/history prefix.
         context_messages = []
-        
-        if system_prompt:
+
+        if card_prompt:
             context_messages.append({
                 "role": "system",
-                "content": system_prompt
+                "content": card_prompt
             })
-        
-        # Always inject RAG block so the LLM is aware retrieval ran (even on cold start)
+
+        # Conversation history (stable, append-only while it fits the recency window)
+        context_messages.extend(fitted_history)
+
+        # Volatile retrieval block: emotion + long-term memory + knowledge base,
+        # assembled into a single system turn placed right before the user message.
         rag_block = rag_context if rag_context else "[No relevant memories retrieved yet — this is the start of a new conversation]"
+        volatile_parts = []
+        if emotional_context:
+            volatile_parts.append(emotional_context)
+        volatile_parts.append(f"## Retrieved Memory Context\n{rag_block}")
+        if kb_context:
+            volatile_parts.append(
+                "## Knowledge Base Context\n"
+                "(From client's ingested documents and past conversations)\n\n"
+                f"{kb_context}"
+            )
+        if settings.enable_notion_tools:
+            _notion_note = (
+                "## Notion\n"
+                "You have tools to access the user's Notion: search it, read a page, "
+                "or create a new page. Use them ONLY when the user clearly asks you to "
+                "look something up in Notion or save/write something to Notion. "
+                "Otherwise just talk normally and do not mention these tools."
+            )
+            if settings.notion_default_parent_id:
+                _notion_note += (
+                    "\nWhen creating a page, create it inside the user's "
+                    f"'Character Knowledge' database (parent data_source_id: "
+                    f"{settings.notion_default_parent_id}), and set the page's title "
+                    "(the Name property) to a short descriptive title."
+                )
+            volatile_parts.append(_notion_note)
         context_messages.append({
             "role": "system",
-            "content": f"## Retrieved Memory Context\n{rag_block}"
+            "content": "\n\n".join(volatile_parts)
         })
 
-        # Inject knowledge base context if available
-        if kb_context:
-            context_messages.append({
-                "role": "system",
-                "content": f"## Knowledge Base Context\n(From client's ingested documents and past conversations)\n\n{kb_context}"
-            })
-        
-        # Add conversation history
-        context_messages.extend(fitted_history)
-        
         # Add current user message
         context_messages.append({
             "role": "user",
             "content": user_message
         })
+
+        # Apply Anthropic prompt-caching breakpoints (no-op for non-Claude models).
+        # ONLY the character card is cached: it's the one prefix that is identical
+        # on every turn for a given character, so its cache is read every request.
+        # The history is now a fixed-size recency window (last N messages) that
+        # slides every turn, so its prefix shifts each request — caching it would
+        # write a block that is never read (a net write-premium loss), so we don't.
+        context_messages = apply_prompt_caching(
+            context_messages,
+            model=request.model,
+            cache_card=bool(card_prompt),
+            cache_history=False,
+        )
         
         # Log context build
         context_result = token_manager.build_context_summary(
@@ -345,7 +441,7 @@ async def chat_completions(request: ChatCompletionRequest):
                         messages=context_messages,
                         model=request.model,
                         temperature=request.temperature or 0.9,
-                        max_tokens=request.max_tokens or 800,
+                        max_tokens=request.max_tokens or 2048,
                         top_p=request.top_p or 1.0
                     ):
                         # Extract text content from SSE chunk for accumulation
@@ -406,15 +502,39 @@ async def chat_completions(request: ChatCompletionRequest):
             )
         
         else:
-            # Non-streaming response
-            response = await llm_client.chat_completion(
-                messages=context_messages,
-                model=request.model,  # Pass model for Mancer
-                temperature=request.temperature or 0.9,
-                max_tokens=request.max_tokens or 800,
-                top_p=request.top_p or 1.0
-            )
-            
+            # Non-streaming response.
+            # When Notion tools are enabled (and the provider supports the agentic
+            # loop), let the character call Notion mid-generation; otherwise the
+            # plain single-shot call. Any failure fetching tools falls back cleanly.
+            notion_tools = []
+            if settings.enable_notion_tools and hasattr(llm_client, "chat_completion_agentic"):
+                try:
+                    from app.services import notion_mcp
+                    notion_tools = await notion_mcp.get_openai_tools()
+                except Exception as _nt_err:
+                    logger.warning(f"Notion tools unavailable, proceeding without: {_nt_err}")
+                    notion_tools = []
+
+            if notion_tools:
+                response = await llm_client.chat_completion_agentic(
+                    messages=context_messages,
+                    tools=notion_tools,
+                    tool_executor=notion_mcp.call_tool,
+                    model=request.model,
+                    temperature=request.temperature or 0.9,
+                    max_tokens=request.max_tokens or 2048,
+                    top_p=request.top_p or 1.0,
+                    max_iters=settings.notion_tool_max_iters,
+                )
+            else:
+                response = await llm_client.chat_completion(
+                    messages=context_messages,
+                    model=request.model,  # Pass model for Mancer
+                    temperature=request.temperature or 0.9,
+                    max_tokens=request.max_tokens or 2048,
+                    top_p=request.top_p or 1.0
+                )
+
             assistant_message = response.choices[0].message.content
             
             # Step 7: Store messages (embeddings only if enabled in .env)
