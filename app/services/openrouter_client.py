@@ -296,6 +296,11 @@ class OpenRouterClient:
                 "stream": False,
                 "usage": {"include": True},
             }
+            # Let the model research live info via OpenRouter's web plugin. This
+            # is the path production uses when Notion tools are enabled, so the
+            # web-search flag must be honored here too (not just chat_completion).
+            if settings.openrouter_web_search:
+                payload["plugins"] = [{"id": "web"}]
             if tools:
                 payload["tools"] = tools
                 payload["tool_choice"] = "auto"
