@@ -97,6 +97,23 @@ def _build_create_page_payload(args: dict) -> dict:
 _PROTOCOL_VERSION = "2025-03-26"
 _tools_cache: Optional[list[dict]] = None
 
+# Explicit, unambiguous descriptions for the allowlisted read tools so the model
+# does NOT grab the Notion "search" tool for general/web lookups. These operate
+# ONLY on the user's private Notion workspace, never the web.
+_TOOL_DESC_OVERRIDES = {
+    "API-post-search": (
+        "Search ONLY the user's private Notion workspace (their personal notes and "
+        "pages). This does NOT search the web or general knowledge. Do not use it to "
+        "look up TV shows, movies, people, facts, or current events — those are handled "
+        "by web search automatically. Use only when the user explicitly asks about their "
+        "own Notion notes."
+    ),
+    "API-retrieve-page-markdown": (
+        "Read the full markdown of a specific page in the user's private Notion "
+        "workspace. Not for web or general-knowledge lookups."
+    ),
+}
+
 
 def _headers(session_id: Optional[str] = None) -> dict:
     h = {
@@ -184,7 +201,7 @@ async def get_openai_tools() -> list[dict]:
             desc = _SLIM_CREATE_PAGE_DESC
         else:
             params = t.get("inputSchema", {"type": "object", "properties": {}})
-            desc = (t.get("description") or "").strip()[:1024]
+            desc = _TOOL_DESC_OVERRIDES.get(name) or (t.get("description") or "").strip()[:1024]
         out.append({
             "type": "function",
             "function": {"name": name, "description": desc, "parameters": params},

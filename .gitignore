@@ -31,7 +31,6 @@ env/
 .env.local
 
 # IDEs
-.vscode/
 .idea/
 *.swp
 *.swo
@@ -81,3 +80,7 @@ temp/
 
 # backup files
 *.bak*
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
+.gitignore

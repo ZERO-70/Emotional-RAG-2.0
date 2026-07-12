@@ -354,10 +354,16 @@ async def chat_completions(request: ChatCompletionRequest):
             )
         if settings.enable_notion_tools:
             _notion_note = (
-                "## Notion\n"
-                "You have tools to access the user's Notion: search it, read a page, "
-                "or create a new page. Use them ONLY when the user clearly asks you to "
-                "look something up in Notion or save/write something to Notion. "
+                "## Looking things up: Web vs. Notion\n"
+                "You have TWO separate and unrelated lookup capabilities. Do not confuse them:\n"
+                "- WEB SEARCH is automatic. For any general knowledge, facts, current events, "
+                "people, TV shows, movies, or anything on the internet (e.g. \"search up Better "
+                "Call Saul\"), just answer normally in character — live web results are already "
+                "provided to you. NEVER use the Notion tools for this kind of request.\n"
+                "- NOTION tools (search / read / create) access ONLY the user's own PRIVATE "
+                "Notion workspace (their personal notes). Use them ONLY when the user explicitly "
+                "mentions Notion or their notes, or asks you to save/write something down for "
+                "them. When it is not clearly about the user's personal Notion, it is NOT Notion. "
                 "Otherwise just talk normally and do not mention these tools."
             )
             if settings.notion_default_parent_id:
