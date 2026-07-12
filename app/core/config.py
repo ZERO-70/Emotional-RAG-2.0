@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     openrouter_default_model: str = "google/gemma-2-9b-it:free"
     openrouter_site_url: Optional[str] = None
     openrouter_site_name: Optional[str] = None
+
+    # OpenAI API Configuration (used for embeddings)
+    openai_api_key: Optional[str] = None
     
     # Server Configuration
     host: str = "0.0.0.0"
@@ -38,7 +41,9 @@ class Settings(BaseSettings):
     db_path: str = "./data/sessions"
     
     # RAG Configuration
-    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_provider: str = "openai"  # "openai" or "local"
+    embedding_model: str = "text-embedding-3-small"
+    embedding_dimensions: int = 1536
     rag_top_k: int = 3
     
     # Phase 2: Feature Flags
