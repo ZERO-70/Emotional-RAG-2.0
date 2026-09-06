@@ -140,11 +140,12 @@ class OpenRouterClient:
         stream: bool = False,
         temperature: float = 0.9,
         max_tokens: int = 800,
-        top_p: float = 1.0
+        top_p: float = 1.0,
+        web_search: Optional[bool] = None
     ) -> ChatCompletionResponse:
         """
         OpenAI-compatible chat completion.
-        
+
         Args:
             messages: List of message dicts with 'role' and 'content'
             model: Model to use (if None, uses default)
@@ -152,7 +153,10 @@ class OpenRouterClient:
             temperature: Sampling temperature (0.0 - 2.0)
             max_tokens: Maximum tokens in response
             top_p: Nucleus sampling parameter
-            
+            web_search: Override the web-search plugin for this call. None = use
+                the global setting; False = force off (e.g. memory summarisation
+                must never pull live web facts into a character's memory).
+
         Returns:
             ChatCompletionResponse object
         """
@@ -175,7 +179,8 @@ class OpenRouterClient:
                     "usage": {"include": True}
                 }
                 # Let the model research live info via OpenRouter's web plugin.
-                if settings.openrouter_web_search:
+                use_web = settings.openrouter_web_search if web_search is None else web_search
+                if use_web:
                     payload["plugins"] = [{"id": "web"}]
 
                 logger.debug(

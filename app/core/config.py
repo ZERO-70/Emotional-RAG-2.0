@@ -64,6 +64,23 @@ class Settings(BaseSettings):
     notion_tool_max_iters: int = 6     # Max tool-call rounds/response (round 1 is spent on the lazy 'open_notion' gateway, leaving ~5 for real tools)
     notion_default_parent_id: str = ""  # Notion data_source/database id new pages are created under
 
+    # --- Character relational-state memory (backend-driven, cost-neutral) ---
+    # Each character keeps ONE Notion page (a "relational memory") shared across
+    # all of its chats (keyed by the session_id in request.user). The LLM never
+    # writes it — the backend reads it into context (offsetting RAG so tokens stay
+    # flat) and a CHEAP model refreshes it in a background task off the Opus path.
+    enable_character_state: bool = False           # master switch (enable via .env)
+    character_state_parent_id: str = ""            # Notion data_source id state pages live under; falls back to notion_default_parent_id
+    character_state_model: str = "anthropic/claude-haiku-4-5"  # cheap model used ONLY to compact the memory (never Opus)
+    character_state_compact_cooldown_min: int = 15  # min minutes between compactions per character
+    character_state_compact_min_new_msgs: int = 6   # min new messages since last compaction before we bother
+    character_state_recent_msgs: int = 30           # how many recent messages feed a compaction
+    character_state_max_inject_chars: int = 2400    # hard cap on the memory block injected into context (~600 tokens)
+    character_state_rag_offset: bool = True         # trim RAG top_k when a memory block is present (keeps total tokens flat)
+    character_state_rag_top_k_when_present: int = 1  # rag_top_k to use when a memory block is injected
+    character_state_read_ttl_sec: int = 45          # in-process cache TTL for the memory read (avoids a Notion call every turn)
+    character_state_read_timeout_sec: float = 6.0   # hot-path Notion read timeout; on timeout we proceed without the block
+
     # Phase 2: ChromaDB Configuration
     chromadb_path: str = "./data/chromadb"
     chromadb_host: Optional[str] = None

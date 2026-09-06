@@ -101,7 +101,8 @@ class UnifiedLLMClient:
         stream: bool = False,
         temperature: float = 0.9,
         max_tokens: int = 800,
-        top_p: float = 1.0
+        top_p: float = 1.0,
+        web_search: Optional[bool] = None
     ) -> ChatCompletionResponse:
         """
         Generate chat completion using the current provider.
@@ -121,14 +122,19 @@ class UnifiedLLMClient:
             # For Mancer and OpenRouter, we pass the model parameter
             # For Gemini, the model is configured in settings
             if self.provider_name in ["mancer", "openrouter"]:
-                return await self.provider.chat_completion(
+                kwargs = dict(
                     messages=messages,
                     model=model,
                     stream=stream,
                     temperature=temperature,
                     max_tokens=max_tokens,
-                    top_p=top_p
+                    top_p=top_p,
                 )
+                # Only OpenRouter supports the web-search override; don't pass it
+                # to Mancer (its signature doesn't accept it).
+                if self.provider_name == "openrouter":
+                    kwargs["web_search"] = web_search
+                return await self.provider.chat_completion(**kwargs)
             else:
                 # Gemini doesn't support model parameter in chat_completion
                 return await self.provider.chat_completion(

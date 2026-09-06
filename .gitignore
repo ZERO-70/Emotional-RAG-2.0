@@ -44,6 +44,7 @@ logs/
 data/sessions/*.db
 data/embeddings/
 data/chromadb/
+data/character_state_pages.json
 *.sqlite
 *.db
 *.bin

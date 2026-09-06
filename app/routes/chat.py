@@ -13,6 +13,7 @@ from app.models.chat import (
     ModelInfo
 )
 from app.core.config import settings
+from app.services import notion_state
 
 logger = logging.getLogger(__name__)
 
@@ -186,12 +187,31 @@ async def chat_completions(request: ChatCompletionRequest):
                     persona = msg.content
                     break
         
+        # Step 2b: Character relational-state memory (backend-driven, cost-neutral).
+        # Read the character's persistent memory page (shared across all its chats
+        # via chat_id) and, when present, trim RAG so total prompt tokens stay flat
+        # — the curated memory displaces fuzzy retrieval rather than adding to it.
+        state_display_name = chat_id
+        state_block = None
+        if notion_state.is_enabled():
+            try:
+                state_display_name = notion_state.extract_character_name(persona, chat_id)
+                await notion_state.get_or_create_page_id(chat_id, state_display_name)
+                _state_md = await notion_state.read_state(chat_id)
+                state_block = notion_state.build_injection_block(_state_md)
+            except Exception as _st_err:
+                logger.warning(f"Character state read failed, proceeding without: {_st_err}")
+                state_block = None
+
         # Step 3: Retrieve semantic context via RAG
+        _rag_top_k = settings.rag_top_k
+        if state_block and settings.character_state_rag_offset:
+            _rag_top_k = min(_rag_top_k, settings.character_state_rag_top_k_when_present)
         rag_context = await memory_manager.retrieve_semantic_context(
             chat_id=chat_id,
             query=user_message,
             query_emotion=emotional_state.emotion,
-            top_k=settings.rag_top_k,
+            top_k=_rag_top_k,
             max_tokens=settings.rag_token_budget
         )
 
@@ -343,6 +363,10 @@ async def chat_completions(request: ChatCompletionRequest):
         # assembled into a single system turn placed right before the user message.
         rag_block = rag_context if rag_context else "[No relevant memories retrieved yet — this is the start of a new conversation]"
         volatile_parts = []
+        # Persistent relational memory leads the volatile block so it reads as
+        # established continuity the character already carries.
+        if state_block:
+            volatile_parts.append(state_block)
         if emotional_context:
             volatile_parts.append(emotional_context)
         volatile_parts.append(f"## Retrieved Memory Context\n{rag_block}")
@@ -496,6 +520,11 @@ async def chat_completions(request: ChatCompletionRequest):
                                    "user_embedded": _embed_user, "asst_embedded": _embed_asst,
                                    "assistant_length": len(assistant_text)}
                         )
+                        # Refresh the character's persistent Notion memory in the
+                        # background (cheap model, off the Opus path).
+                        if notion_state.is_enabled():
+                            asyncio.create_task(notion_state.maybe_compact(
+                                chat_id, state_display_name, memory_manager, llm_client))
                 except Exception as store_err:
                     logger.error(f"Failed to store streaming embeddings: {store_err}")
 
@@ -581,7 +610,13 @@ async def chat_completions(request: ChatCompletionRequest):
                     memory_manager.create_summary(chat_id, llm_client)
                 )
                 logger.info(f"Triggered background summarization for chat: {chat_id}")
-            
+
+            # Refresh the character's persistent Notion memory in the background
+            # (cheap model, off the Opus path — never blocks or bills the reply).
+            if notion_state.is_enabled():
+                asyncio.create_task(notion_state.maybe_compact(
+                    chat_id, state_display_name, memory_manager, llm_client))
+
             logger.info(
                 f"Chat completion successful",
                 extra={
