@@ -97,6 +97,35 @@ def _build_create_page_payload(args: dict) -> dict:
 _PROTOCOL_VERSION = "2025-03-26"
 _tools_cache: Optional[list[dict]] = None
 
+# --- Lazy / layered tool loading (cost) -----------------------------------
+# The full Notion tool schemas (~4.6k tokens) used to be attached to EVERY
+# character reply, yet Notion is actually invoked ~1% of the time. Instead we
+# attach only this tiny "gateway" tool by default; the model calls it to unlock
+# the real search/read/create tools, so their heavy schema is sent only on the
+# rare turns Notion is genuinely needed. The agentic loop performs the swap via
+# its `expand_tools` mapping (see openrouter_client.chat_completion_agentic).
+GATEWAY_TOOL_NAME = "open_notion"
+_GATEWAY_TOOL = {
+    "type": "function",
+    "function": {
+        "name": GATEWAY_TOOL_NAME,
+        "description": (
+            "Unlock the user's PRIVATE Notion tools (search / read / create their own "
+            "personal notes). Call this ONLY when the user explicitly asks about their "
+            "own Notion notes, or asks you to save / write something down to Notion. Do "
+            "NOT call it for general knowledge, facts, web lookups, TV shows, people, or "
+            "current events — those are already answered for you without any tools."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+
+def get_gateway_tool() -> list[dict]:
+    """The single lightweight tool offered by default. When the model calls it,
+    the agentic loop swaps in the full tool set from get_openai_tools()."""
+    return [_GATEWAY_TOOL]
+
 # Explicit, unambiguous descriptions for the allowlisted read tools so the model
 # does NOT grab the Notion "search" tool for general/web lookups. These operate
 # ONLY on the user's private Notion workspace, never the web.
@@ -212,6 +241,11 @@ async def get_openai_tools() -> list[dict]:
 
 async def call_tool(name: str, arguments: dict[str, Any]) -> str:
     """Execute one Notion tool; return its textual result."""
+    if name == GATEWAY_TOOL_NAME:
+        # No real work: the agentic loop swaps in the actual tools when it sees
+        # this call. Just tell the model the toolset is now available.
+        return ("Notion tools unlocked: you can now search, read, and create pages in "
+                "the user's private Notion. Call the specific tool you need.")
     if name not in TOOL_ALLOWLIST:
         return f"Error: tool '{name}' is not permitted."
     # Expand the slim create-page args into Notion's full payload.

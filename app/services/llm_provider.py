@@ -152,10 +152,14 @@ class UnifiedLLMClient:
         max_tokens: int = 800,
         top_p: float = 1.0,
         max_iters: int = 5,
+        expand_tools: Optional[Dict[str, List[Dict]]] = None,
     ) -> ChatCompletionResponse:
         """Run a provider-native tool-calling loop if the underlying provider
         supports it (currently OpenRouter); otherwise fall back to a normal
-        completion with no tools so behaviour degrades gracefully."""
+        completion with no tools so behaviour degrades gracefully.
+
+        `expand_tools` is passed through to enable lazy/layered tool loading (a
+        tiny gateway tool that unlocks the full set on demand)."""
         if hasattr(self.provider, "chat_completion_agentic"):
             return await self.provider.chat_completion_agentic(
                 messages=messages,
@@ -166,6 +170,7 @@ class UnifiedLLMClient:
                 max_tokens=max_tokens,
                 top_p=top_p,
                 max_iters=max_iters,
+                expand_tools=expand_tools,
             )
         logger.info(f"Provider {self.provider_name} has no tool loop — answering without tools")
         return await self.chat_completion(

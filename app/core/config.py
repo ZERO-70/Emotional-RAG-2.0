@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     enable_postgresql: bool = False
     enable_metrics: bool = False
     enable_notion_tools: bool = False  # Let characters call Notion MCP tools (search/read/create)
-    notion_tool_max_iters: int = 5     # Max tool-call rounds per response
+    notion_tool_max_iters: int = 6     # Max tool-call rounds/response (round 1 is spent on the lazy 'open_notion' gateway, leaving ~5 for real tools)
     notion_default_parent_id: str = ""  # Notion data_source/database id new pages are created under
 
     # Phase 2: ChromaDB Configuration

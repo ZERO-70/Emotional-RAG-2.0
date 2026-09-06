@@ -353,27 +353,24 @@ async def chat_completions(request: ChatCompletionRequest):
                 f"{kb_context}"
             )
         if settings.enable_notion_tools:
-            _notion_note = (
-                "## Looking things up: Web vs. Notion\n"
-                "You have TWO separate and unrelated lookup capabilities. Do not confuse them:\n"
-                "- WEB SEARCH is automatic. For any general knowledge, facts, current events, "
-                "people, TV shows, movies, or anything on the internet (e.g. \"search up Better "
-                "Call Saul\"), just answer normally in character — live web results are already "
-                "provided to you. NEVER use the Notion tools for this kind of request.\n"
-                "- NOTION tools (search / read / create) access ONLY the user's own PRIVATE "
-                "Notion workspace (their personal notes). Use them ONLY when the user explicitly "
-                "mentions Notion or their notes, or asks you to save/write something down for "
-                "them. When it is not clearly about the user's personal Notion, it is NOT Notion. "
-                "Otherwise just talk normally and do not mention these tools."
+            # Slimmed guidance: the detailed "when to use Notion" rules now live in
+            # the gateway tool's description (cached, sent lazily), so this volatile
+            # (uncached) note stays short — just the web-vs-Notion distinction.
+            volatile_parts.append(
+                "Web search is automatic: for general facts, people, shows, or current "
+                "events, answer in character using the live results already provided and "
+                "never announce that you searched. The user's private Notion notes are a "
+                "separate thing — only reach for the Notion tools when they explicitly ask "
+                "about their own notes or to save something down."
             )
-            if settings.notion_default_parent_id:
-                _notion_note += (
-                    "\nWhen creating a page, create it inside the user's "
-                    f"'Character Knowledge' database (parent data_source_id: "
-                    f"{settings.notion_default_parent_id}), and set the page's title "
-                    "(the Name property) to a short descriptive title."
-                )
-            volatile_parts.append(_notion_note)
+        # Gentle length steer (applies to every reply): keep replies full and
+        # expressive but avoid padding — nudges output down a little without
+        # making it terse.
+        volatile_parts.append(
+            "Length: reply at a natural, full length that fits the moment — expressive and "
+            "complete — but once you've made your point, wrap up rather than padding, "
+            "repeating yourself, or over-explaining."
+        )
         context_messages.append({
             "role": "system",
             "content": "\n\n".join(volatile_parts)
@@ -513,13 +510,23 @@ async def chat_completions(request: ChatCompletionRequest):
             # loop), let the character call Notion mid-generation; otherwise the
             # plain single-shot call. Any failure fetching tools falls back cleanly.
             notion_tools = []
+            notion_expand = None
             if settings.enable_notion_tools and hasattr(llm_client, "chat_completion_agentic"):
                 try:
                     from app.services import notion_mcp
-                    notion_tools = await notion_mcp.get_openai_tools()
+                    # Lazy/layered loading: attach only the tiny gateway tool by
+                    # default (~150 tok, cached). The model unlocks the full
+                    # search/read/create schemas (~4.6k tok) via expand_tools only
+                    # on the rare turns it actually needs Notion, so ~99% of
+                    # replies no longer carry the heavy tool payload.
+                    full_notion_tools = await notion_mcp.get_openai_tools()
+                    if full_notion_tools:
+                        notion_tools = notion_mcp.get_gateway_tool()
+                        notion_expand = {notion_mcp.GATEWAY_TOOL_NAME: full_notion_tools}
                 except Exception as _nt_err:
                     logger.warning(f"Notion tools unavailable, proceeding without: {_nt_err}")
                     notion_tools = []
+                    notion_expand = None
 
             if notion_tools:
                 response = await llm_client.chat_completion_agentic(
@@ -531,6 +538,7 @@ async def chat_completions(request: ChatCompletionRequest):
                     max_tokens=request.max_tokens or 2048,
                     top_p=request.top_p or 1.0,
                     max_iters=settings.notion_tool_max_iters,
+                    expand_tools=notion_expand,
                 )
             else:
                 response = await llm_client.chat_completion(

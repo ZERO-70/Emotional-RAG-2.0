@@ -357,16 +357,23 @@ class OpenRouterClient:
         max_tokens: int = 800,
         top_p: float = 1.0,
         max_iters: int = 5,
+        expand_tools: Optional[Dict[str, List[Dict]]] = None,
     ) -> ChatCompletionResponse:
         """Tool-calling loop: let the model call `tools` (run via the async
         `tool_executor(name, args) -> str`) until it returns a final answer.
         Returns a normal ChatCompletionResponse so SillyTavern is unchanged.
-        If the loop hits max_iters, force one final tool-free answer."""
+        If the loop hits max_iters, force one final tool-free answer.
+
+        `expand_tools` maps a lightweight "gateway" tool name -> the fuller tool
+        list to switch to once the model calls it. This lets us offer a tiny
+        unlock tool by default and only pay for heavy tool schemas on the rare
+        turns the model actually asks for them (lazy/layered loading)."""
         convo = list(messages)
+        active_tools = tools
         last_usage: dict = {}
         for round_idx in range(max_iters):
             raw = await self._agentic_raw_call(
-                convo, tools=tools, model=model,
+                convo, tools=active_tools, model=model,
                 temperature=temperature, max_tokens=max_tokens, top_p=top_p,
             )
             msg = raw["message"]
@@ -396,9 +403,21 @@ class OpenRouterClient:
                     "tool_call_id": tc.get("id"),
                     "content": str(result)[:8000],
                 })
+                # Lazy expansion: once the model calls the gateway tool, swap in
+                # the fuller tool set so subsequent rounds can actually use it.
+                if expand_tools and name in expand_tools:
+                    active_tools = expand_tools[name]
             logger.info("Notion tool round executed",
                         extra={"round": round_idx + 1, "calls": len(tool_calls)})
-        # Exhausted iterations — force a final answer with no tools.
+        # Exhausted iterations — force a final, tool-free answer. Nudge explicitly
+        # so the model stops emitting tool calls and actually replies in character:
+        # without this, a conversation that ends on tool results can come back as an
+        # empty turn (the model tries to call yet another tool that isn't offered).
+        convo.append({
+            "role": "user",
+            "content": "[Stop searching now and reply to me directly, in character, "
+                       "using whatever you've already found.]",
+        })
         raw = await self._agentic_raw_call(
             convo, tools=None, model=model,
             temperature=temperature, max_tokens=max_tokens, top_p=top_p,
