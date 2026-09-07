@@ -53,11 +53,14 @@ def _auth() -> str:
 
 
 # Safety allowlist: which of the Notion MCP's 24 tools characters may use.
-# Conservative start: search, read a page (markdown), create a page.
+# search, read (markdown), create, and EDIT existing pages. Destructive ops
+# (delete-a-block, move-page, etc.) are deliberately NOT exposed to the model,
+# even with full-workspace access, to bound the blast radius.
 TOOL_ALLOWLIST = {
     "API-post-search",
     "API-retrieve-page-markdown",
     "API-post-page",
+    "API-update-page-markdown",
 }
 
 # Notion's native create-page schema is ~3.6k chars and dominates the tool-token
@@ -69,21 +72,40 @@ _SLIM_CREATE_PAGE_SCHEMA = {
     "properties": {
         "title": {"type": "string", "description": "Short title for the new Notion page"},
         "content": {"type": "string", "description": "Optional plain-text body for the page"},
+        "parent_id": {"type": "string", "description": (
+            "Optional: the data_source/database ID to create the page in (find it "
+            "with search first). Omit to use the default Character Knowledge database.")},
     },
     "required": ["title"],
 }
 _SLIM_CREATE_PAGE_DESC = (
     "Create a new page in the user's Notion. Provide a short title and optional "
-    "plain-text body; it is filed in the user's Character Knowledge database."
+    "plain-text body. By default it is filed in the Character Knowledge database; "
+    "pass parent_id to create it in a different database."
+)
+
+# Slim edit schema: read a page (retrieve markdown), then replace its whole body.
+_SLIM_UPDATE_PAGE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "page_id": {"type": "string", "description": "ID of the existing page to edit"},
+        "content": {"type": "string", "description": "The complete new page content as Markdown (replaces the whole page body)"},
+    },
+    "required": ["page_id", "content"],
+}
+_SLIM_UPDATE_PAGE_DESC = (
+    "Edit an EXISTING page in the user's Notion by replacing its full content with "
+    "new Markdown. Read the page first (retrieve markdown), merge your changes, then "
+    "write the complete updated version back. Use for living documents like memory pages."
 )
 
 
 def _build_create_page_payload(args: dict) -> dict:
-    """Expand {title, content} into Notion's full create-page request, parented
-    under the configured default database (NOTION_DEFAULT_PARENT_ID)."""
+    """Expand {title, content, parent_id?} into Notion's full create-page request.
+    Parents under parent_id when given, else the default Character Knowledge DB."""
     title = args.get("title", "")
     content = args.get("content", "")
-    parent_id = os.getenv("NOTION_DEFAULT_PARENT_ID", "")
+    parent_id = args.get("parent_id") or os.getenv("NOTION_DEFAULT_PARENT_ID", "")
     # Write the note into the Name (title) + Content columns, matching how
     # existing rows store data so search surfaces created notes too.
     properties: dict = {"Name": {"title": [{"text": {"content": title}}]}}
@@ -93,6 +115,12 @@ def _build_create_page_payload(args: dict) -> dict:
     if parent_id:
         payload["parent"] = {"data_source_id": parent_id}
     return payload
+
+
+def _build_update_page_payload(args: dict) -> dict:
+    """Expand slim {page_id, content} into Notion's replace-content request."""
+    return {"page_id": args.get("page_id", ""), "type": "replace_content",
+            "replace_content": {"new_str": args.get("content", "")}}
 
 _PROTOCOL_VERSION = "2025-03-26"
 _tools_cache: Optional[list[dict]] = None
@@ -110,9 +138,9 @@ _GATEWAY_TOOL = {
     "function": {
         "name": GATEWAY_TOOL_NAME,
         "description": (
-            "Unlock the user's PRIVATE Notion tools (search / read / create their own "
-            "personal notes). Call this ONLY when the user explicitly asks about their "
-            "own Notion notes, or asks you to save / write something down to Notion. Do "
+            "Unlock the user's PRIVATE Notion tools (search / read / create / edit their "
+            "own notes and pages). Call this ONLY when the user explicitly asks about their "
+            "own Notion notes, or asks you to save / write / update something in Notion. Do "
             "NOT call it for general knowledge, facts, web lookups, TV shows, people, or "
             "current events — those are already answered for you without any tools."
         ),
@@ -228,6 +256,9 @@ async def get_openai_tools() -> list[dict]:
         if name == "API-post-page":
             params = _SLIM_CREATE_PAGE_SCHEMA
             desc = _SLIM_CREATE_PAGE_DESC
+        elif name == "API-update-page-markdown":
+            params = _SLIM_UPDATE_PAGE_SCHEMA
+            desc = _SLIM_UPDATE_PAGE_DESC
         else:
             params = t.get("inputSchema", {"type": "object", "properties": {}})
             desc = _TOOL_DESC_OVERRIDES.get(name) or (t.get("description") or "").strip()[:1024]
@@ -244,13 +275,16 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> str:
     if name == GATEWAY_TOOL_NAME:
         # No real work: the agentic loop swaps in the actual tools when it sees
         # this call. Just tell the model the toolset is now available.
-        return ("Notion tools unlocked: you can now search, read, and create pages in "
-                "the user's private Notion. Call the specific tool you need.")
+        return ("Notion tools unlocked: you can now search, read, create, and edit pages "
+                "in the user's private Notion. Call the specific tool you need.")
     if name not in TOOL_ALLOWLIST:
         return f"Error: tool '{name}' is not permitted."
     # Expand the slim create-page args into Notion's full payload.
     if name == "API-post-page" and "title" in arguments and "parent" not in arguments:
         arguments = _build_create_page_payload(arguments)
+    # Expand the slim edit-page args into Notion's replace-content payload.
+    elif name == "API-update-page-markdown" and "content" in arguments and "type" not in arguments:
+        arguments = _build_update_page_payload(arguments)
     try:
         result = await _rpc("tools/call", {"name": name, "arguments": arguments})
     except Exception as e:

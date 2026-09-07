@@ -385,7 +385,7 @@ async def chat_completions(request: ChatCompletionRequest):
                 "events, answer in character using the live results already provided and "
                 "never announce that you searched. The user's private Notion notes are a "
                 "separate thing — only reach for the Notion tools when they explicitly ask "
-                "about their own notes or to save something down."
+                "about their own notes, or to save, update, or edit something in Notion."
             )
         # Gentle length steer (applies to every reply): keep replies full and
         # expressive but avoid padding — nudges output down a little without
