@@ -193,6 +193,7 @@ async def chat_completions(request: ChatCompletionRequest):
         # — the curated memory displaces fuzzy retrieval rather than adding to it.
         state_display_name = chat_id
         state_block = None
+        pile_block = None
         if notion_state.is_enabled():
             try:
                 state_display_name = notion_state.extract_character_name(persona, chat_id)
@@ -202,10 +203,19 @@ async def chat_completions(request: ChatCompletionRequest):
             except Exception as _st_err:
                 logger.warning(f"Character state read failed, proceeding without: {_st_err}")
                 state_block = None
+        # Shared pile memory (cross-character continuity) — read alongside own memory.
+        if settings.enable_pile_memory:
+            try:
+                await notion_state.get_or_create_pile_page()
+                _pile_md = await notion_state.read_state(notion_state.PILE_KEY)
+                pile_block = notion_state.build_pile_block(_pile_md)
+            except Exception as _pile_err:
+                logger.warning(f"Pile memory read failed, proceeding without: {_pile_err}")
+                pile_block = None
 
-        # Step 3: Retrieve semantic context via RAG
+        # Step 3: Retrieve semantic context via RAG (trim when curated memory present)
         _rag_top_k = settings.rag_top_k
-        if state_block and settings.character_state_rag_offset:
+        if (state_block or pile_block) and settings.character_state_rag_offset:
             _rag_top_k = min(_rag_top_k, settings.character_state_rag_top_k_when_present)
         rag_context = await memory_manager.retrieve_semantic_context(
             chat_id=chat_id,
@@ -367,6 +377,8 @@ async def chat_completions(request: ChatCompletionRequest):
         # established continuity the character already carries.
         if state_block:
             volatile_parts.append(state_block)
+        if pile_block:
+            volatile_parts.append(pile_block)
         if emotional_context:
             volatile_parts.append(emotional_context)
         volatile_parts.append(f"## Retrieved Memory Context\n{rag_block}")

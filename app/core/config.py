@@ -81,6 +81,14 @@ class Settings(BaseSettings):
     character_state_read_ttl_sec: int = 45          # in-process cache TTL for the memory read (avoids a Notion call every turn)
     character_state_read_timeout_sec: float = 6.0   # hot-path Notion read timeout; on timeout we proceed without the block
 
+    # --- Shared "pile" memory (cross-character continuity) ---
+    # One shared Notion page every character reads + contributes to, so something
+    # logged from one character's channel is known to the others. Injected next to
+    # the character's own memory; RAG is trimmed further to keep tokens flat.
+    enable_pile_memory: bool = False                # master switch (enable via .env)
+    pile_page_title: str = "The Pile — Shared Memory"
+    pile_max_inject_chars: int = 1800               # cap on the pile block injected into context
+
     # Phase 2: ChromaDB Configuration
     chromadb_path: str = "./data/chromadb"
     chromadb_host: Optional[str] = None

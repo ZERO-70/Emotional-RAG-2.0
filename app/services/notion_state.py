@@ -44,6 +44,11 @@ _locks: dict[str, asyncio.Lock] = {}
 # round-trip on every turn when chatting rapidly.
 _read_cache: dict[str, tuple[str, float]] = {}
 
+# Shared "pile" memory: one page all characters read + contribute to. Stored in
+# the same map under this reserved key; a single lock serialises writes to it.
+PILE_KEY = "__pile__"
+_pile_lock = asyncio.Lock()
+
 
 # --------------------------------------------------------------------------- #
 # Prompts — deliberately crafted; these are the heart of the feature.
@@ -119,6 +124,54 @@ def _compaction_user_prompt(existing: str, conversation: str) -> str:
         f"CURRENT MEMORY:\n{existing_block}\n\n"
         f"LATEST CONVERSATION (oldest to newest):\n{conversation}\n\n"
         f"Produce the updated memory now."
+    )
+
+
+# Prepended to the SHARED pile memory when injected into any character's context.
+PILE_INJECTION_PREAMBLE = (
+    "The following is shared memory across everyone you are connected to — the group "
+    "and their life with the person you talk to — including things that happened in "
+    "conversations you were not part of. Treat it as things you are aware of and would "
+    "naturally know, so continuity holds across everyone. Never quote it, list it back, "
+    "or mention \"shared notes\" or a \"file\" — just be someone who is in the loop."
+)
+
+
+def _pile_system_prompt(char: str, user_ref: str) -> str:
+    return (
+        f"You maintain the SHARED memory of a group (\"the pile\") — the characters "
+        f"connected to {user_ref} and their shared life together. You are given the "
+        f"CURRENT SHARED MEMORY and {char}'s LATEST CONVERSATION. Fold in only the "
+        f"developments the WHOLE group should know.\n\n"
+        f"Rules:\n"
+        f"- Include only group-relevant things: {user_ref}'s life updates, shared events "
+        f"and plans, group dynamics, things characters would tell each other. LEAVE OUT "
+        f"private one-on-one moments that only concern {char}.\n"
+        f"- Merge, do not replace. Keep what still holds; update what changed; add what's "
+        f"new. Record ONLY what the conversation or current memory supports — never invent.\n"
+        f"- Third person, warm and concrete. Keep the whole document under ~300 words; trim "
+        f"the oldest/least important shared events so it stays tight.\n"
+        f"- If nothing group-relevant is new, return the current shared memory UNCHANGED.\n"
+        f"- Output ONLY the shared memory as Markdown in EXACTLY this structure, no preamble "
+        f"or code fences:\n\n"
+        f"# The Pile — shared memory\n\n"
+        f"## Who's in the pile\n"
+        f"- <the characters and who they are to {user_ref}>\n\n"
+        f"## What's going on with {user_ref}\n"
+        f"- <current life updates everyone should know>\n\n"
+        f"## Shared events & plans\n"
+        f"- <things happening across the group, plans, ongoing threads>\n\n"
+        f"## Group dynamics\n"
+        f"- <how things stand between everyone right now>"
+    )
+
+
+def _pile_user_prompt(existing: str, char: str, conversation: str) -> str:
+    existing_block = existing.strip() if existing and existing.strip() else "(empty — start it)"
+    return (
+        f"CURRENT SHARED MEMORY:\n{existing_block}\n\n"
+        f"{char}'S LATEST CONVERSATION (oldest to newest):\n{conversation}\n\n"
+        f"Produce the updated shared memory now."
     )
 
 
@@ -309,6 +362,48 @@ def build_injection_block(markdown: Optional[str]) -> Optional[str]:
     return f"## Persistent memory (yours to keep)\n{INJECTION_PREAMBLE}\n\n{body}"
 
 
+# --- Shared pile page -------------------------------------------------------
+
+async def get_or_create_pile_page() -> Optional[str]:
+    """Return the shared pile page id, creating it once. Non-fatal (None on fail)."""
+    entry = _get_entry(PILE_KEY)
+    if entry.get("page_id"):
+        return entry["page_id"]
+    parent = _parent_id()
+    if not parent:
+        return None
+    async with _pile_lock:
+        entry = _get_entry(PILE_KEY)
+        if entry.get("page_id"):
+            return entry["page_id"]
+        try:
+            obj = await _call("API-post-page", {
+                "parent": {"data_source_id": parent},
+                "properties": {"Name": {"title": [{"text": {"content": settings.pile_page_title}}]}},
+            })
+            page_id = obj.get("id")
+            if not page_id:
+                return None
+            _update_entry(PILE_KEY, page_id=page_id, title=settings.pile_page_title,
+                          created_ts=time.time(), last_compaction_ts=0.0)
+            logger.info(f"[state] created shared pile page -> {page_id}")
+            return page_id
+        except Exception as e:
+            logger.warning(f"[state] create pile page failed: {e}")
+            return None
+
+
+def build_pile_block(markdown: Optional[str]) -> Optional[str]:
+    """Wrap the shared pile memory in its framing preamble, or None if too thin."""
+    if not markdown:
+        return None
+    body = markdown.strip()
+    if len(body) < 40:
+        return None
+    body = body[: settings.pile_max_inject_chars]
+    return f"## Shared memory (the pile)\n{PILE_INJECTION_PREAMBLE}\n\n{body}"
+
+
 # --------------------------------------------------------------------------- #
 # Compaction (background, cheap model)
 # --------------------------------------------------------------------------- #
@@ -394,7 +489,42 @@ async def maybe_compact(chat_id: str, display_name: str, memory_manager, llm_cli
                 "[state] compacted memory",
                 extra={"chat_id": chat_id, "chars": len(new_doc), "messages_seen": len(messages)},
             )
+            # Also fold group-relevant developments into the shared pile memory.
+            if settings.enable_pile_memory:
+                await _update_pile(display_name, convo, llm_client, user_ref)
             return True
     except Exception as e:
         logger.warning(f"[state] compaction failed for {chat_id}: {e}")
         return False
+
+
+async def _update_pile(display_name: str, convo: str, llm_client, user_ref: str) -> None:
+    """Merge group-relevant developments from a character's recent conversation into
+    the shared pile page. Cheap model, serialised by _pile_lock. Never raises."""
+    try:
+        page_id = await get_or_create_pile_page()
+        if not page_id:
+            return
+        async with _pile_lock:
+            existing = await read_state(PILE_KEY, force_fresh=True) or ""
+            resp = await llm_client.chat_completion(
+                messages=[
+                    {"role": "system", "content": _pile_system_prompt(display_name, user_ref)},
+                    {"role": "user", "content": _pile_user_prompt(existing, display_name, convo)},
+                ],
+                model=settings.character_state_model,
+                temperature=0.2, max_tokens=800, top_p=1.0, web_search=False,
+            )
+            new_doc = (resp.choices[0].message.content or "").strip()
+            if len(new_doc) < 40 or "# " not in new_doc:
+                return
+            if new_doc.startswith("```"):
+                new_doc = new_doc.strip("`")
+                new_doc = new_doc.split("\n", 1)[-1] if "\n" in new_doc else new_doc
+            if new_doc.strip() == existing.strip():
+                return  # nothing group-relevant changed
+            await _write_markdown(page_id, new_doc)
+            _read_cache[PILE_KEY] = (new_doc, time.monotonic() + settings.character_state_read_ttl_sec)
+            logger.info("[state] updated pile memory", extra={"by": display_name, "chars": len(new_doc)})
+    except Exception as e:
+        logger.warning(f"[state] pile update failed ({display_name}): {e}")
